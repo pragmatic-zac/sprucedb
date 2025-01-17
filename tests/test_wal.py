@@ -1,9 +1,12 @@
+import os
+import tempfile
+
 import pytest
 import struct
 import zlib
 from datetime import datetime
 
-from src.wal import WALOperationType, WALEntry
+from src.wal import WALOperationType, WALEntry, WriteAheadLog, MAX_KEY_BYTES
 
 
 def test_serialize_put_entry():
@@ -130,3 +133,90 @@ def test_serialize_empty_value():
 
     assert value_len == 0
     assert len(serialized) == WALEntry.HEADER_SIZE + len(key)
+
+
+def test_basic_write_and_rotation():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wal_path = os.path.join(tmpdir, "test.wal")
+
+        # test basic writes
+        wal = WriteAheadLog(wal_path)
+        pos1 = wal.write_to_log(WALOperationType.PUT, "key1", b"value1")
+        pos2 = wal.write_to_log(WALOperationType.PUT, "key2", b"value2")
+
+        # verify positions are sequential
+        assert pos2 > pos1
+
+        # rotate the file
+        old_path = wal.rotate("sst_001")
+        assert os.path.exists(old_path)
+
+        # verify we can still write after rotation
+        pos3 = wal.write_to_log(WALOperationType.PUT, "key3", b"value3")
+        assert pos3 == 0  # Position should reset after rotation
+
+
+def test_wal_validations():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wal_path = os.path.join(tmpdir, "test.wal")
+        wal = WriteAheadLog(wal_path)
+
+        # invalid key should raise
+        with pytest.raises(ValueError):
+            wal.write_to_log(WALOperationType.PUT, "", b"value")
+
+        # huge key should raise
+        huge_key = "x" * (MAX_KEY_BYTES + 1)
+        with pytest.raises(ValueError):
+            wal.write_to_log(WALOperationType.PUT, huge_key, b"value")
+
+
+def test_file_closure_and_sync():
+    # test that file is properly closed and synced when using context manager
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wal_path = os.path.join(tmpdir, "test.wal")
+
+        with WriteAheadLog(wal_path) as wal:
+            pos = wal.write_to_log(WALOperationType.PUT, "key1", b"value1")
+
+        # verify file is closed
+        assert wal.write_file is None
+
+        # verify data was actually written by reading file
+        with open(wal_path + "." + datetime.utcnow().strftime('%Y%m%d%H%M%S'), 'rb') as f:
+            data = f.read()
+            entry = WALEntry.deserialize(data)
+            assert entry.key == "key1"
+            assert entry.value == b"value1"
+            assert entry.op_type == WALOperationType.PUT
+
+
+def test_explicit_close():
+    # test explicit close() call
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wal_path = os.path.join(tmpdir, "test.wal")
+        wal = WriteAheadLog(wal_path)
+
+        wal.write_to_log(WALOperationType.PUT, "key1", b"value1")
+        wal.close()
+
+        assert wal.write_file is None
+
+        # verify we can't write after closing
+        with pytest.raises(RuntimeError):
+            wal.write_to_log(WALOperationType.PUT, "key2", b"value2")
+
+def test_read_log_entry():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wal_path = os.path.join(tmpdir, "test.wal")
+        wal = WriteAheadLog(wal_path)
+
+        expected_key = "key1"
+        expected_value = b"value100"
+
+        wal.write_to_log(WALOperationType.PUT, expected_key, expected_value)
+
+        result = wal.read_log_entry(0)
+
+        assert expected_key == result.key
+        assert expected_value == result.value
