@@ -1,3 +1,6 @@
+import os
+import struct
+
 import pytest
 from src.sstable import SSTableEntry, MAX_KEY_SIZE, MAX_VALUE_SIZE, SSTableEntry, SSTableFeatureFlags, SSTableWriter
 
@@ -84,14 +87,13 @@ def test_add_entry_maintains_sort_order(temp_sstable):
             writer.add_entry(SSTableEntry("a", b"1"))
 
 def test_writer_tracks_count_and_size(temp_sstable):
-    with SSTableWriter(temp_sstable) as writer:
-        writer.add_entry(SSTableEntry("a", b"1"))
-        assert writer.entry_count == 1
+    writer = SSTableWriter(temp_sstable)
+    writer.add_entry(SSTableEntry("a", b"1"))
+    assert writer.entry_count == 1
 
-        expected_size = len(SSTableEntry("a", b"1").serialize())
-
-        writer.finalize()
-        assert writer.data_size == expected_size
+    writer.finalize()
+    assert writer.data_size == len(SSTableEntry("a", b"1").serialize())
+    writer._file.close()
 
 def test_duplicate_keys_not_allowed(temp_sstable):
     with SSTableWriter(temp_sstable) as writer:
@@ -99,11 +101,27 @@ def test_duplicate_keys_not_allowed(temp_sstable):
         with pytest.raises(ValueError):
             writer.add_entry(SSTableEntry("a", b"2"))
 
-def test_sstable_writer_writes_valid_file(temp_sstable):
+
+def test_value_error_triggers_discard(temp_sstable):
     with SSTableWriter(temp_sstable) as writer:
-        # write some entries
         writer.add_entry(SSTableEntry("b", b"2"))
+        try:
+            writer.add_entry(SSTableEntry("a", b"1"))  # Out of order - raises ValueError
+        except ValueError:
+            pass
 
-        # validate header
+    # file should be discarded due to ValueError
+    assert not os.path.exists(temp_sstable)
 
-        # validate footer - only written on finalize
+def test_writer_sets_feature_flags(temp_sstable):
+    features = SSTableFeatureFlags.COMPRESSION | SSTableFeatureFlags.BLOOM_FILTER
+    writer = SSTableWriter(temp_sstable, features)
+    writer.add_entry(SSTableEntry("a", b"1"))
+
+    file_path = writer._file.name
+    writer.finalize()
+
+    with open(file_path, "rb") as f:
+        f.read(6)  # skip magic + version
+        flags = struct.unpack("!I", f.read(4))[0]
+        assert flags == features.value

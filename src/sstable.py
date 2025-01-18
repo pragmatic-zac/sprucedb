@@ -165,8 +165,8 @@ class SSTableWriter:
         self._data_crc = 0
 
         os.makedirs(os.path.dirname(base_path), exist_ok=True)
-        filepath = self._get_timestamped_path()
-        self._file = open(filepath, 'wb')
+        self.filepath = self._get_timestamped_path()
+        self._file = open(self.filepath, 'wb')
 
         self.timestamp = int(datetime.utcnow().timestamp())
 
@@ -189,7 +189,7 @@ class SSTableWriter:
         return f"{self.base_path}.{timestamp}"
 
     def add_entry(self, entry: SSTableEntry) -> None:
-        """Add entry, enforcing sort order"""
+        """ Add entry, enforcing sort order """
         if self._last_key and self._last_key > entry.key:
             raise ValueError('Entries are not in sorted order')
 
@@ -205,7 +205,7 @@ class SSTableWriter:
 
 
     def finalize(self) -> None:
-        """Write header/footer, sync to disk, close file"""
+        """ Write header/footer, sync to disk, close file """
         # recalculate, pack, crc header
         header = struct.pack(
             HEADER_FORMAT,
@@ -239,13 +239,23 @@ class SSTableWriter:
         self._file.seek(end_data_pos)
         self._file.write(footer)
 
+        self._file.flush()
+        os.fsync(self._file.fileno())
+        self._file.close()
+
 
     def discard(self) -> None:
-        """Cleanup partial SSTable if something fails"""
-        # TODO
+        """ Cleanup partial SSTable if something fails """
+        if self._file:
+            self._file.close()
+        if os.path.exists(self.filepath):
+            os.remove(self.filepath)
 
     def __enter__(self) -> 'SSTableWriter':
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        self.finalize()
+        if exc_type is not None:
+            self.discard()
+        else:
+            self.finalize()
