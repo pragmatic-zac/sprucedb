@@ -1,7 +1,7 @@
 import pytest
-from src.sstable import SSTableEntry, MAX_KEY_SIZE, MAX_VALUE_SIZE
+from src.sstable import SSTableEntry, MAX_KEY_SIZE, MAX_VALUE_SIZE, SSTableEntry, SSTableFeatureFlags, SSTableWriter
 
-
+# SSTableEntry tests
 def test_basic_serialization_deserialization():
     """Test basic serialization and deserialization of an entry."""
     # create an entry
@@ -66,3 +66,44 @@ def test_sorting():
 
     sorted_entries = sorted(entries)
     assert [e.key for e in sorted_entries] == ["apple", "banana", "zebra"]
+
+# SSTableWriter tests
+@pytest.fixture
+def temp_sstable(tmp_path):
+    path = tmp_path / "test.sst"
+    return str(path)
+
+
+def test_add_entry_maintains_sort_order(temp_sstable):
+    with SSTableWriter(temp_sstable) as writer:
+        writer.add_entry(SSTableEntry("b", b"2"))
+        writer.add_entry(SSTableEntry("c", b"3"))
+        writer.add_entry(SSTableEntry("d", b"4"))
+
+        with pytest.raises(ValueError):
+            writer.add_entry(SSTableEntry("a", b"1"))
+
+def test_writer_tracks_count_and_size(temp_sstable):
+    with SSTableWriter(temp_sstable) as writer:
+        writer.add_entry(SSTableEntry("a", b"1"))
+        assert writer.entry_count == 1
+
+        expected_size = len(SSTableEntry("a", b"1").serialize())
+
+        writer.finalize()
+        assert writer.data_size == expected_size
+
+def test_duplicate_keys_not_allowed(temp_sstable):
+    with SSTableWriter(temp_sstable) as writer:
+        writer.add_entry(SSTableEntry("a", b"1"))
+        with pytest.raises(ValueError):
+            writer.add_entry(SSTableEntry("a", b"2"))
+
+def test_sstable_writer_writes_valid_file(temp_sstable):
+    with SSTableWriter(temp_sstable) as writer:
+        # write some entries
+        writer.add_entry(SSTableEntry("b", b"2"))
+
+        # validate header
+
+        # validate footer - only written on finalize

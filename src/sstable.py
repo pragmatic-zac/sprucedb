@@ -1,5 +1,8 @@
+import os
 import struct
+import zlib
 from dataclasses import dataclass
+from datetime import datetime
 
 from enum import Flag, auto
 from typing import Final, Optional
@@ -146,3 +149,103 @@ class SSTableEntry:
 
     def __gt__(self, other: 'SSTableEntry') -> bool:
         return self.key > other.key
+
+
+# TODO: sketch data flow and layers
+class SSTableWriter:
+    def __init__(self, base_path: str, features: SSTableFeatureFlags = SSTableFeatureFlags.NONE):
+        """Create new SSTable file with header"""
+        self.base_path = base_path
+        self.features = features
+        self.entry_count = 0
+        self.data_size = 0
+        self._last_key = None  # for enforcing sorted order
+        self._file = None
+        self._data_start_pos = 0
+        self._data_crc = 0
+
+        os.makedirs(os.path.dirname(base_path), exist_ok=True)
+        filepath = self._get_timestamped_path()
+        self._file = open(filepath, 'wb')
+
+        self.timestamp = int(datetime.utcnow().timestamp())
+
+        header = struct.pack(
+            HEADER_FORMAT,
+            SSTABLE_MAGIC,
+            SSTABLE_VERSION,
+            features.value,
+            b'\x00' * 16, # empty bytes for the placeholder
+            self.timestamp,
+            0, # entry count placeholder
+            0, # data size placeholder
+            0, # checksum placeholder
+        )
+        self._file.write(header)
+        self._data_start_pos = self._file.tell()
+
+    def _get_timestamped_path(self) -> str:
+        timestamp = datetime.utcnow().strftime('%Y%m%d%H%M%S')
+        return f"{self.base_path}.{timestamp}"
+
+    def add_entry(self, entry: SSTableEntry) -> None:
+        """Add entry, enforcing sort order"""
+        if self._last_key and self._last_key > entry.key:
+            raise ValueError('Entries are not in sorted order')
+
+        if self._last_key and self._last_key == entry.key:
+            raise ValueError(f'Duplicate key: {entry.key}')
+
+        entry_bytes = entry.serialize()
+        self._file.write(entry_bytes)
+        self._last_key = entry.key
+
+        self._data_crc = zlib.crc32(entry_bytes, self._data_crc)
+        self.entry_count += 1
+
+
+    def finalize(self) -> None:
+        """Write header/footer, sync to disk, close file"""
+        # recalculate, pack, crc header
+        header = struct.pack(
+            HEADER_FORMAT,
+            SSTABLE_MAGIC,
+            SSTABLE_VERSION,
+            self.features.value,
+            b'\x00' * 16,
+            self.timestamp,
+            self.entry_count,
+            self.data_size,
+            0
+        )
+        header_crc = zlib.crc32(header[:-4])
+        header = header[:-4] + struct.pack("!I", header_crc)
+
+        # grab current position so we can return and write the footer here
+        end_data_pos = self._file.tell()
+
+        # calculate data size from file positions
+        self.data_size = end_data_pos - self._data_start_pos
+
+        # seek back to beginning and rewrite header, now with complete info
+        self._file.seek(0)
+        self._file.write(header)
+
+        # calculate, pack, crc footer
+        footer = struct.pack(FOOTER_FORMAT,self._data_crc, 0, 0)
+        footer_crc = zlib.crc32(footer[:-4])
+        footer = footer[:-4] + struct.pack("!I", footer_crc)
+
+        self._file.seek(end_data_pos)
+        self._file.write(footer)
+
+
+    def discard(self) -> None:
+        """Cleanup partial SSTable if something fails"""
+        # TODO
+
+    def __enter__(self) -> 'SSTableWriter':
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.finalize()
