@@ -1,2 +1,2 @@
-def test_stub():
+def test_stub() -> None:
     assert True == True

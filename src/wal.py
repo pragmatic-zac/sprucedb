@@ -29,11 +29,11 @@ class WALEntry:
     HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 
     def __init__(self, timestamp: int, op_type: WALOperationType,
-                 key: str, value: Optional[bytes] = None):
+                 key: str, value: bytes = b''):
         self._timestamp = timestamp
         self._op_type = op_type
         self._key = key
-        self._value = value if value else b''
+        self._value = value
 
     @classmethod
     def put(cls, timestamp: int, key: str, value: bytes) -> 'WALEntry':
@@ -41,7 +41,7 @@ class WALEntry:
 
     @classmethod
     def delete(cls, timestamp: int, key: str) -> 'WALEntry':
-        return cls(timestamp, WALOperationType.DELETE, key)
+        return cls(timestamp, WALOperationType.DELETE, key, b'')
 
     @property
     def timestamp(self) -> int:
@@ -56,7 +56,7 @@ class WALEntry:
         return self._key
 
     @property
-    def value(self) -> Optional[bytes]:
+    def value(self) -> bytes:
         return self._value
 
     def serialize(self) -> bytes:
@@ -209,7 +209,7 @@ class WriteAheadLog:
     def __enter__(self) -> 'WriteAheadLog':
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(self, exc_type: Optional[type], exc_val: Optional[Exception], exc_tb: Optional[object]) -> None:
         self.close()
 
     def write_to_log(self, op_type: WALOperationType, key: str, value: Optional[bytes] = None) -> int:
@@ -244,6 +244,8 @@ class WriteAheadLog:
         if op_type == WALOperationType.DELETE:
             entry = WALEntry.delete(timestamp, key)
         else:
+            if value is None:
+                raise ValueError('value is required for PUT operations')
             entry = WALEntry.put(timestamp, key, value)
 
         serialized_entry = entry.serialize()
@@ -259,7 +261,7 @@ class WriteAheadLog:
 
         return current_position
 
-    def read_log_entry(self, position: int = None) -> Optional[WALEntry]:
+    def read_log_entry(self, position: Optional[int] = None) -> Optional[WALEntry]:
         """
         Read a single WAL entry from the given position.
 
