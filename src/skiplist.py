@@ -71,3 +71,25 @@ class SkipList(Generic[T]):
         
         return None
 
+    def delete(self, key: Comparable):
+        update: list[Optional[Node]] = [None] * self.max_level
+        current: Node = self.head
+
+        # start at the highest level and work down
+        for i in range(self.level, -1, -1):
+            while (current.forward[i] and current.forward[i].key < key):
+                current = current.forward[i]
+            update[i] = current
+
+        # if we found the node to delete
+        current = current.forward[0]
+        if current and current.key == key:
+            # update all levels that point to this node
+            for i in range(self.level + 1):
+                if update[i].forward[i] != current:
+                    break
+                update[i].forward[i] = current.forward[i]
+
+            # update the level if needed
+            while self.level > 0 and self.head.forward[self.level] is None:
+                self.level -= 1

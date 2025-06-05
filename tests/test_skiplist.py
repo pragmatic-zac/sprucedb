@@ -72,3 +72,32 @@ def test_objects():
     skiplist.insert("foo", expected)
 
     assert skiplist.search("foo") == expected
+
+def test_basic_delete():
+    skiplist = SkipList[int]()
+    
+    # Insert some values
+    skiplist.insert(5, 100)
+    skiplist.insert(3, 200)
+    skiplist.insert(7, 300)
+    
+    # Delete a value
+    skiplist.delete(3)
+    
+    # Verify the deleted value is gone
+    assert skiplist.search(3) is None
+    # Verify other values are still there
+    assert skiplist.search(5) == 100
+    assert skiplist.search(7) == 300
+
+def test_delete_nonexistent_key():
+    skiplist = SkipList[int]()
+    
+    # Insert a value
+    skiplist.insert(5, 100)
+    
+    # Try to delete a non-existent key
+    skiplist.delete(10)  # Should not raise any error
+    
+    # Verify the existing value is still there
+    assert skiplist.search(5) == 100
