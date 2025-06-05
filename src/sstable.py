@@ -3,9 +3,8 @@ import struct
 import zlib
 from dataclasses import dataclass
 from datetime import datetime
-
 from enum import Flag, auto
-from typing import Final, Optional
+from typing import Final, Optional, Tuple, BinaryIO
 
 """
 SSTable format
@@ -110,7 +109,7 @@ class SSTableEntry:
         return key_len_bytes + key_bytes + value_len_bytes + value_bytes
 
     @classmethod
-    def deserialize(cls, data: bytes) -> tuple['SSTableEntry', int]:
+    def deserialize(cls, data: bytes) -> Tuple['SSTableEntry', int]:
         """
         Deserialize bytes into SSTableEntry.
         Returns tuple of (entry, bytes_consumed)
@@ -159,8 +158,8 @@ class SSTableWriter:
         self.features = features
         self.entry_count = 0
         self.data_size = 0
-        self._last_key = None  # for enforcing sorted order
-        self._file = None
+        self._last_key: Optional[str] = None  # for enforcing sorted order
+        self._file: Optional[BinaryIO] = None
         self._data_start_pos = 0
         self._data_crc = 0
 
@@ -190,10 +189,13 @@ class SSTableWriter:
 
     def add_entry(self, entry: SSTableEntry) -> None:
         """ Add entry, enforcing sort order """
-        if self._last_key and self._last_key > entry.key:
+        if self._file is None:
+            raise RuntimeError("File not initialized")
+            
+        if self._last_key is not None and self._last_key > entry.key:
             raise ValueError('Entries are not in sorted order')
 
-        if self._last_key and self._last_key == entry.key:
+        if self._last_key is not None and self._last_key == entry.key:
             raise ValueError(f'Duplicate key: {entry.key}')
 
         entry_bytes = entry.serialize()
@@ -206,6 +208,9 @@ class SSTableWriter:
 
     def finalize(self) -> None:
         """ Write header/footer, sync to disk, close file """
+        if self._file is None:
+            raise RuntimeError("File not initialized")
+            
         # recalculate, pack, crc header
         header = struct.pack(
             HEADER_FORMAT,
@@ -254,7 +259,7 @@ class SSTableWriter:
     def __enter__(self) -> 'SSTableWriter':
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(self, exc_type: Optional[type], exc_val: Optional[Exception], exc_tb: Optional[object]) -> None:
         if exc_type is not None:
             self.discard()
         else:

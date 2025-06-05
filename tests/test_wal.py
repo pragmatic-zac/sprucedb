@@ -9,7 +9,7 @@ from datetime import datetime
 from src.wal import WALOperationType, WALEntry, WriteAheadLog, MAX_KEY_BYTES
 
 
-def test_serialize_put_entry():
+def test_serialize_put_entry() -> None:
     timestamp = int(datetime.now().timestamp())
     key = "test_key"
     value = b"test_value"
@@ -49,7 +49,7 @@ def test_serialize_put_entry():
     assert src_crc == expected_crc
 
 
-def test_serialize_delete_entry():
+def test_serialize_delete_entry() -> None:
     timestamp = int(datetime.now().timestamp())
     key = "test_key"
     entry = WALEntry.delete(timestamp, key)
@@ -87,7 +87,7 @@ def test_serialize_delete_entry():
     assert src_crc == expected_crc
 
 
-def test_serialize_with_unicode_key():
+def test_serialize_with_unicode_key() -> None:
     timestamp = int(datetime.now().timestamp())
     key = "𓂀𓃭𓆣"  # eye of Horus, cat, bee
     value = b"test_value"
@@ -119,7 +119,7 @@ def test_serialize_with_unicode_key():
     assert read_value == value
 
 
-def test_serialize_empty_value():
+def test_serialize_empty_value() -> None:
     timestamp = int(datetime.now().timestamp())
     key = "test_key"
     value = b""
@@ -135,7 +135,7 @@ def test_serialize_empty_value():
     assert len(serialized) == WALEntry.HEADER_SIZE + len(key)
 
 
-def test_basic_write_and_rotation():
+def test_basic_write_and_rotation() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         wal_path = os.path.join(tmpdir, "test.wal")
 
@@ -156,7 +156,7 @@ def test_basic_write_and_rotation():
         assert pos3 == 0  # Position should reset after rotation
 
 
-def test_wal_validations():
+def test_wal_validations() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         wal_path = os.path.join(tmpdir, "test.wal")
         wal = WriteAheadLog(wal_path)
@@ -171,7 +171,7 @@ def test_wal_validations():
             wal.write_to_log(WALOperationType.PUT, huge_key, b"value")
 
 
-def test_file_closure_and_sync():
+def test_file_closure_and_sync() -> None:
     # test that file is properly closed and synced when using context manager
     with tempfile.TemporaryDirectory() as tmpdir:
         wal_path = os.path.join(tmpdir, "test.wal")
@@ -191,7 +191,7 @@ def test_file_closure_and_sync():
             assert entry.op_type == WALOperationType.PUT
 
 
-def test_explicit_close():
+def test_explicit_close() -> None:
     # test explicit close() call
     with tempfile.TemporaryDirectory() as tmpdir:
         wal_path = os.path.join(tmpdir, "test.wal")
@@ -206,7 +206,7 @@ def test_explicit_close():
         with pytest.raises(RuntimeError):
             wal.write_to_log(WALOperationType.PUT, "key2", b"value2")
 
-def test_read_log_entry():
+def test_read_log_entry() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         wal_path = os.path.join(tmpdir, "test.wal")
         wal = WriteAheadLog(wal_path)
@@ -217,6 +217,6 @@ def test_read_log_entry():
         wal.write_to_log(WALOperationType.PUT, expected_key, expected_value)
 
         result = wal.read_log_entry(0)
-
+        assert result is not None
         assert expected_key == result.key
         assert expected_value == result.value
