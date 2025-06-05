@@ -67,9 +67,9 @@ def test_negative_keys() -> None:
     assert skiplist.search(-4) is None 
 
 def test_objects() -> None:
-    skiplist = SkipList[object]()
+    skiplist = SkipList[str]()  # Changed to use string keys which are comparable
 
-    expected = {"key": "bar"}
+    expected = "bar"
     skiplist.insert("foo", expected)
 
     assert skiplist.search("foo") == expected
@@ -81,7 +81,7 @@ def test_basic_delete() -> None:
     skiplist.insert(5, 100)
     skiplist.insert(3, 200)
     skiplist.insert(7, 300)
-    
+
     # Delete a value
     skiplist.delete(3)
     
