@@ -1,27 +1,27 @@
-from typing import Optional, Protocol, TypeVar, Generic
+from typing import Optional, Protocol, TypeVar, Generic, List, Any
 import random
 
 T = TypeVar('T')
 
 class Comparable(Protocol):
-    def __lt__(self, other: 'Comparable') -> bool: ...
-    def __gt__(self, other: 'Comparable') -> bool: ...
+    def __lt__(self, other: Any) -> bool: ...
+    def __gt__(self, other: Any) -> bool: ...
     def __eq__(self, other: object) -> bool: ...
 
 class Node(Generic[T]):
-    def __init__(self, key: Comparable, value: T, level: int = 0) -> None:
+    def __init__(self, key: Optional[Comparable], value: Optional[T], level: int = 0) -> None:
         self.key = key
         self.value = value
-        self.forward: list[Optional['Node']] = [None] * (level + 1)
+        self.forward: List[Optional['Node[T]']] = [None] * (level + 1)
 
 class SkipList(Generic[T]):
     def __init__(self, p: float = 0.5, max_level: int = 4) -> None:
         self.max_level = max_level
         self.level = 0
         self.p = p
-        self.head = Node(None, None, level=max_level - 1)
+        self.head: Node[T] = Node(None, None, level=max_level - 1)
         
-    def _create_node(self, key: Comparable, value: T, level: int) -> Node:
+    def _create_node(self, key: Comparable, value: T, level: int) -> Node[T]:
         return Node(key, value, level)
     
     def _random_level(self) -> int:
@@ -30,66 +30,71 @@ class SkipList(Generic[T]):
             level += 1
         return level
 
-    def insert(self, key: Comparable, value: T):
-        # store update positions for each level
-        update: list[Optional[Node]] = [None] * self.max_level
-        current: Node = self.head
+    def insert(self, key: Comparable, value: T) -> None:
+        update: List[Optional[Node[T]]] = [None] * self.max_level
+        current: Optional[Node[T]] = self.head
 
-        # start at the highest level and work down
         for i in range(self.level, -1, -1):
-            while (current.forward[i] and current.forward[i].key < key):
-                current = current.forward[i]
+            while True:
+                next_node = current.forward[i] if current is not None else None
+                if next_node is not None and next_node.key is not None and next_node.key < key:
+                    current = next_node
+                else:
+                    break
             update[i] = current
 
-        # generate random level for the new node
         level = self._random_level()
 
-        # if the new level is greater than current
         if level > self.level:
             for i in range(self.level + 1, level + 1):
                 update[i] = self.head
             self.level = level
 
-        # create new node and update references
         new_node = self._create_node(key, value, level)
         for i in range(level + 1):
-            new_node.forward[i] = update[i].forward[i]
-            update[i].forward[i] = new_node
+            updater = update[i]
+            if updater is not None:
+                new_node.forward[i] = updater.forward[i]
+                updater.forward[i] = new_node
 
     def search(self, key: Comparable) -> Optional[T]:
-        current: Node = self.head
+        current: Optional[Node[T]] = self.head
 
-        # start at the highest level and work down
         for i in range(self.level, -1, -1):
-            while (current.forward[i] and current.forward[i].key < key):
-                current = current.forward[i]
+            while True:
+                next_node = current.forward[i] if current is not None else None
+                if next_node is not None and next_node.key is not None and next_node.key < key:
+                    current = next_node
+                else:
+                    break
 
-        current = current.forward[0]
-        
-        if current and current.key == key:
+        if current is not None:
+            current = current.forward[0]
+
+        if current is not None and current.key is not None and current.key == key:
             return current.value
-        
         return None
 
-    def delete(self, key: Comparable):
-        update: list[Optional[Node]] = [None] * self.max_level
-        current: Node = self.head
+    def delete(self, key: Comparable) -> None:
+        update: List[Optional[Node[T]]] = [None] * self.max_level
+        current: Optional[Node[T]] = self.head
 
-        # start at the highest level and work down
         for i in range(self.level, -1, -1):
-            while (current.forward[i] and current.forward[i].key < key):
-                current = current.forward[i]
+            while True:
+                next_node = current.forward[i] if current is not None else None
+                if next_node is not None and next_node.key is not None and next_node.key < key:
+                    current = next_node
+                else:
+                    break
             update[i] = current
 
-        # if we found the node to delete
-        current = current.forward[0]
-        if current and current.key == key:
-            # update all levels that point to this node
-            for i in range(self.level + 1):
-                if update[i].forward[i] != current:
-                    break
-                update[i].forward[i] = current.forward[i]
+        if current is not None:
+            current = current.forward[0]
 
-            # update the level if needed
+        if current is not None and current.key is not None and current.key == key:
+            for i in range(self.level + 1):
+                updater = update[i]
+                if updater is not None and updater.forward[i] == current:
+                    updater.forward[i] = current.forward[i]
             while self.level > 0 and self.head.forward[self.level] is None:
                 self.level -= 1

@@ -1,6 +1,7 @@
 from src.skiplist import SkipList
+from typing import NoReturn
 
-def test_basic_insert_and_search():
+def test_basic_insert_and_search() -> None:
     skiplist = SkipList[int]()
     
     skiplist.insert(5, 100)
@@ -12,11 +13,11 @@ def test_basic_insert_and_search():
     assert skiplist.search(7) == 300
     assert skiplist.search(4) is None  # Non-existent key
 
-def test_empty_list():
+def test_empty_list() -> None:
     skiplist = SkipList[str]()
     assert skiplist.search(1) is None
 
-def test_duplicate_keys():
+def test_duplicate_keys() -> None:
     skiplist = SkipList[str]()
     
     # Insert with same key, different values
@@ -26,7 +27,7 @@ def test_duplicate_keys():
     # Should return the most recently inserted value
     assert skiplist.search(1) == "second"
 
-def test_multiple_levels():
+def test_multiple_levels() -> None:
     skiplist = SkipList[int](p=0.5, max_level=4)
     
     # Insert enough items to likely create multiple levels
@@ -37,7 +38,7 @@ def test_multiple_levels():
     for i in range(10):
         assert skiplist.search(i) == i * 10
 
-def test_different_value_types():
+def test_different_value_types() -> None:
     # Test with string values
     str_skiplist = SkipList[str]()
     str_skiplist.insert(1, "hello")
@@ -53,7 +54,7 @@ def test_different_value_types():
     tuple_skiplist.insert(1, (1, 2, 3))
     assert tuple_skiplist.search(1) == (1, 2, 3)
 
-def test_negative_keys():
+def test_negative_keys() -> None:
     skiplist = SkipList[int]()
     
     skiplist.insert(-5, 100)
@@ -65,7 +66,7 @@ def test_negative_keys():
     assert skiplist.search(-7) == 300
     assert skiplist.search(-4) is None 
 
-def test_objects():
+def test_objects() -> None:
     skiplist = SkipList[object]()
 
     expected = {"key": "bar"}
@@ -73,7 +74,7 @@ def test_objects():
 
     assert skiplist.search("foo") == expected
 
-def test_basic_delete():
+def test_basic_delete() -> None:
     skiplist = SkipList[int]()
     
     # Insert some values
@@ -90,7 +91,7 @@ def test_basic_delete():
     assert skiplist.search(5) == 100
     assert skiplist.search(7) == 300
 
-def test_delete_nonexistent_key():
+def test_delete_nonexistent_key() -> None:
     skiplist = SkipList[int]()
     
     # Insert a value
