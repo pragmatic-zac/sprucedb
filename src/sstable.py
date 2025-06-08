@@ -24,6 +24,7 @@ SSTable format
 
 [DATA SECTION]
 Sorted sequence of entries:
+- Sequence number (8 bytes)
 - Key length (4 bytes)
 - Key (UTF-8 encoded)
 - Value length (4 bytes)
@@ -63,16 +64,19 @@ HEADER_FORMAT: Final[str] = "!4sHI16sQIQI"
 FOOTER_FORMAT: Final[str] = "!QII"
 
 # Entry format:
+# - Sequence number (Q = 8 bytes unsigned long)
 # - Key length (I = 4 bytes unsigned int)
 # - Key (variable)
 # - Value length (I = 4 bytes unsigned int)
 # - Value (variable)
-KEY_LENGTH_FORMAT: Final[str] = "!I"    # format for key length
+SEQUENCE_FORMAT: Final[str] = "!Q"       # format for sequence number
+KEY_LENGTH_FORMAT: Final[str] = "!I"     # format for key length
 VALUE_LENGTH_FORMAT: Final[str] = "!I"   # format for value length
 
 # header/footer sizes
 HEADER_SIZE: Final[int] = struct.calcsize(HEADER_FORMAT)
 FOOTER_SIZE: Final[int] = struct.calcsize(FOOTER_FORMAT)
+SEQUENCE_SIZE: Final[int] = struct.calcsize(SEQUENCE_FORMAT)
 KEY_LEN_SIZE: Final[int] = struct.calcsize(KEY_LENGTH_FORMAT)
 VALUE_LEN_SIZE: Final[int] = struct.calcsize(VALUE_LENGTH_FORMAT)
 
@@ -87,12 +91,13 @@ class SSTableFeatureFlags(Flag):
 @dataclass
 class SSTableEntry:
     key: str
+    sequence: int
     value: Optional[bytes] = None
 
     def serialize(self) -> bytes:
         """
         Serialize entry to bytes in format:
-        [key_length][key][value_length][value]
+        [sequence][key_length][key][value_length][value]
         """
         key_bytes = self.key.encode("utf-8")
         value_bytes = self.value if self.value is not None else b''
@@ -103,10 +108,14 @@ class SSTableEntry:
         if len(value_bytes) > MAX_VALUE_SIZE:
             raise ValueError(f"Value size exceeds max of {MAX_VALUE_SIZE} bytes")
 
+        if self.sequence < 0:
+            raise ValueError("Sequence number must be non-negative")
+
+        sequence_bytes = struct.pack(SEQUENCE_FORMAT, self.sequence)
         key_len_bytes = struct.pack(KEY_LENGTH_FORMAT, len(key_bytes))
         value_len_bytes = struct.pack(VALUE_LENGTH_FORMAT, len(value_bytes))
 
-        return key_len_bytes + key_bytes + value_len_bytes + value_bytes
+        return sequence_bytes + key_len_bytes + key_bytes + value_len_bytes + value_bytes
 
     @classmethod
     def deserialize(cls, data: bytes) -> Tuple['SSTableEntry', int]:
@@ -114,16 +123,22 @@ class SSTableEntry:
         Deserialize bytes into SSTableEntry.
         Returns tuple of (entry, bytes_consumed)
         """
-        if len(data) < KEY_LEN_SIZE:
+        if len(data) < SEQUENCE_SIZE:
+            raise ValueError("Data too short for sequence number")
+
+        sequence = struct.unpack(SEQUENCE_FORMAT, data[:SEQUENCE_SIZE])[0]
+
+        if len(data) < SEQUENCE_SIZE + KEY_LEN_SIZE:
             raise ValueError("Data too short for key length")
 
-        key_length = struct.unpack(KEY_LENGTH_FORMAT, data[:KEY_LEN_SIZE])[0]
-        key_end = KEY_LEN_SIZE + key_length
+        key_length = struct.unpack(KEY_LENGTH_FORMAT, data[SEQUENCE_SIZE:SEQUENCE_SIZE + KEY_LEN_SIZE])[0]
+        key_start = SEQUENCE_SIZE + KEY_LEN_SIZE
+        key_end = key_start + key_length
         if len(data) < key_end:
             raise ValueError("Data too short for key")
 
         try:
-            key = data[KEY_LEN_SIZE:key_end].decode('utf-8')
+            key = data[key_start:key_end].decode('utf-8')
         except UnicodeDecodeError:
             raise ValueError("Invalid UTF-8 encoding in key")
 
@@ -141,12 +156,18 @@ class SSTableEntry:
         value = data[value_offset:value_offset + value_length]
 
         bytes_consumed = value_offset + value_length
-        return cls(key, value), bytes_consumed
+        return cls(key, sequence, value), bytes_consumed
 
     def __lt__(self, other: 'SSTableEntry') -> bool:
+        # First compare by key, then by sequence number (higher sequence wins for same key)
+        if self.key == other.key:
+            return self.sequence < other.sequence
         return self.key < other.key
 
     def __gt__(self, other: 'SSTableEntry') -> bool:
+        # First compare by key, then by sequence number (higher sequence wins for same key)
+        if self.key == other.key:
+            return self.sequence > other.sequence
         return self.key > other.key
 
 
