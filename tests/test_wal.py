@@ -6,7 +6,7 @@ import struct
 import zlib
 from datetime import datetime
 
-from src.wal import WALOperationType, WALEntry, WriteAheadLog, MAX_KEY_BYTES
+from src.wal import WALOperationType, WALEntry, WriteAheadLog, MAX_KEY_BYTES, MAX_VALUE_BYTES
 
 
 def test_serialize_put_entry() -> None:
@@ -184,6 +184,24 @@ def test_wal_validations() -> None:
         with pytest.raises(ValueError):
             wal.write_to_log(WALOperationType.PUT, "key", -1, b"value")
 
+        # huge value should raise
+        huge_value = b"x" * (MAX_VALUE_BYTES + 1)
+        with pytest.raises(ValueError, match=f"value exceeds max size of {MAX_VALUE_BYTES} bytes"):
+            wal.write_to_log(WALOperationType.PUT, "key", 0, huge_value)
+
+        # maximum size value should succeed
+        max_value = b"x" * MAX_VALUE_BYTES
+        pos = wal.write_to_log(WALOperationType.PUT, "key_max", 1, max_value)
+        assert pos >= 0
+
+        # DELETE operations should not be affected by value size (no value)
+        pos = wal.write_to_log(WALOperationType.DELETE, "key_delete", 2)
+        assert pos >= 0
+
+        # PUT with None value should raise (separate from size validation)
+        with pytest.raises(ValueError, match="value is required for PUT operations"):
+            wal.write_to_log(WALOperationType.PUT, "key", 3, None)
+
 
 def test_file_closure_and_sync() -> None:
     # test that file is properly closed and synced when using context manager
@@ -287,3 +305,43 @@ def test_sequence_number_persists_after_rotation() -> None:
         assert entry4 is not None
         assert entry3.sequence == 2
         assert entry4.sequence == 3
+
+
+def test_value_size_consistency_with_sstable() -> None:
+    """Test that WAL and SSTable have consistent value size limits."""
+    from src.sstable import MAX_VALUE_SIZE as SSTABLE_MAX_VALUE_SIZE
+    
+    # Ensure both modules use the same limit
+    assert MAX_VALUE_BYTES == SSTABLE_MAX_VALUE_SIZE, \
+        f"WAL max value size ({MAX_VALUE_BYTES}) != SSTable max value size ({SSTABLE_MAX_VALUE_SIZE})"
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wal_path = os.path.join(tmpdir, "test.wal")
+        wal = WriteAheadLog(wal_path)
+        
+        # Test that both WAL and SSTable reject the same oversized value
+        oversized_value = b"x" * (MAX_VALUE_BYTES + 1)
+        
+        # WAL should reject it
+        with pytest.raises(ValueError, match=f"value exceeds max size of {MAX_VALUE_BYTES} bytes"):
+            wal.write_to_log(WALOperationType.PUT, "test_key", 0, oversized_value)
+        
+        # SSTable should also reject it
+        from src.sstable import SSTableEntry
+        with pytest.raises(ValueError, match=f"Value size exceeds max of {SSTABLE_MAX_VALUE_SIZE} bytes"):
+            entry = SSTableEntry("test_key", 0, oversized_value)
+            entry.serialize()
+        
+        # Test that both accept the maximum size
+        max_size_value = b"x" * MAX_VALUE_BYTES
+        
+        # WAL should accept it
+        pos = wal.write_to_log(WALOperationType.PUT, "test_key", 1, max_size_value)
+        assert pos >= 0
+        
+        # SSTable should also accept it
+        entry = SSTableEntry("test_key", 1, max_size_value)
+        serialized = entry.serialize()
+        assert len(serialized) > 0
+        
+        wal.close()

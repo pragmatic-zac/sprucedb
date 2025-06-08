@@ -18,6 +18,7 @@ Write-ahead log entry format
 """
 
 MAX_KEY_BYTES = 65536
+MAX_VALUE_BYTES = 1024 * 1024  # 1MB max value size, consistent with SSTable
 
 class WALOperationType(Enum):
     PUT = 1
@@ -253,6 +254,10 @@ class WriteAheadLog:
 
         if sequence < 0:
             raise ValueError('sequence number must be non-negative')
+
+        if op_type == WALOperationType.PUT and value is not None:
+            if len(value) > MAX_VALUE_BYTES:
+                raise ValueError(f'value exceeds max size of {MAX_VALUE_BYTES} bytes')
 
         timestamp = int(datetime.utcnow().timestamp())
 

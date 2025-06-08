@@ -43,7 +43,7 @@ SSTABLE_VERSION: Final[int] = 1
 
 # maximum sizes
 MAX_KEY_SIZE: Final[int] = 65536  # same as WAL
-MAX_VALUE_SIZE: Final[int] = 1024 * 1024  # 1MB max value size
+MAX_VALUE_SIZE: Final[int] = 1024 * 1024  # 1MB max value size, consistent with WAL
 
 # Struct formats using network byte order (!)
 # Header format (50 bytes total):
