@@ -371,10 +371,11 @@ def test_value_size_consistency_with_sstable() -> None:
             wal.write_to_log(WALOperationType.PUT, "test_key", 0, oversized_value)
         
         # SSTable should also reject it
-        from src.sstable import SSTableEntry
+        from src.sstable import serialize_entry
+        from src.entry import DatabaseEntry
         with pytest.raises(ValueError, match=f"Value size exceeds max of {SSTABLE_MAX_VALUE_SIZE} bytes"):
-            entry = SSTableEntry("test_key", 0, oversized_value)
-            entry.serialize()
+            entry = DatabaseEntry.put("test_key", 0, oversized_value)
+            serialize_entry(entry)
         
         # Test that both accept the maximum size
         max_size_value = b"x" * MAX_VALUE_BYTES
@@ -384,8 +385,8 @@ def test_value_size_consistency_with_sstable() -> None:
         assert pos >= 0
         
         # SSTable should also accept it
-        entry = SSTableEntry("test_key", 1, max_size_value)
-        serialized = entry.serialize()
+        entry = DatabaseEntry.put("test_key", 1, max_size_value)
+        serialized = serialize_entry(entry)
         assert len(serialized) > 0
         
         wal.close()

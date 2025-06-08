@@ -1,7 +1,7 @@
 import pytest
 from src.entry import DatabaseEntry, EntryType
 from src.wal import WALEntry, WALOperationType
-from src.sstable import SSTableEntry
+from src.sstable import serialize_entry, deserialize_entry
 
 
 def test_database_entry_creation() -> None:
@@ -95,54 +95,47 @@ def test_wal_entry_conversion() -> None:
     assert wal_delete.op_type == WALOperationType.DELETE
 
 
-def test_sstable_entry_conversion() -> None:
-    """Test conversion between DatabaseEntry and SSTableEntry."""
-    # Test PUT entry conversion
+def test_sstable_serialization() -> None:
+    """Test DatabaseEntry serialization/deserialization for SSTable format."""
+    # Test PUT entry serialization
     db_entry = DatabaseEntry.put("test_key", 42, b"test_value")
-    sst_entry = SSTableEntry.from_database_entry(db_entry)
+    serialized = serialize_entry(db_entry)
     
-    assert sst_entry.key == "test_key"
-    assert sst_entry.sequence == 42
-    assert sst_entry.value == b"test_value"
-    assert not sst_entry.is_tombstone()
+    # Deserialize it back
+    deserialized, bytes_consumed = deserialize_entry(serialized)
+    assert bytes_consumed == len(serialized)
+    assert deserialized.key == "test_key"
+    assert deserialized.sequence == 42
+    assert deserialized.value == b"test_value"
+    assert deserialized.entry_type == EntryType.PUT
+    assert deserialized.timestamp is None  # SSTable doesn't preserve timestamp
 
-    # Convert back to DatabaseEntry
-    converted_back = sst_entry.to_database_entry()
-    assert converted_back.key == db_entry.key
-    assert converted_back.sequence == db_entry.sequence
-    assert converted_back.value == db_entry.value
-    assert converted_back.entry_type == db_entry.entry_type
-    assert converted_back.timestamp is None  # SSTable doesn't preserve timestamp
-
-    # Test DELETE entry conversion (tombstone)
+    # Test DELETE entry serialization (tombstone)
     delete_entry = DatabaseEntry.delete("delete_key", 43)
-    sst_delete = SSTableEntry.from_database_entry(delete_entry)
+    serialized_delete = serialize_entry(delete_entry)
     
-    assert sst_delete.key == "delete_key"
-    assert sst_delete.sequence == 43
-    assert sst_delete.value is None  # SSTable uses None for tombstones
-    assert sst_delete.is_tombstone()
-
-    # Convert back to DatabaseEntry
-    converted_delete = sst_delete.to_database_entry()
-    assert converted_delete.key == delete_entry.key
-    assert converted_delete.sequence == delete_entry.sequence
-    assert converted_delete.value is None
-    assert converted_delete.entry_type == EntryType.DELETE
+    # Deserialize it back
+    deserialized_delete, bytes_consumed = deserialize_entry(serialized_delete)
+    assert bytes_consumed == len(serialized_delete)
+    assert deserialized_delete.key == "delete_key"
+    assert deserialized_delete.sequence == 43
+    assert deserialized_delete.value is None  # SSTable uses None for tombstones
+    assert deserialized_delete.entry_type == EntryType.DELETE
+    assert deserialized_delete.is_tombstone()
 
 
 def test_sstable_tombstone_serialization() -> None:
     """Test that SSTable tombstones serialize and deserialize correctly."""
     # Create a tombstone entry
-    tombstone = SSTableEntry("deleted_key", 42, None)
+    tombstone = DatabaseEntry.delete("deleted_key", 42)
     assert tombstone.is_tombstone()
 
     # Serialize it
-    serialized = tombstone.serialize()
+    serialized = serialize_entry(tombstone)
     assert len(serialized) > 0
 
     # Deserialize it
-    deserialized, bytes_consumed = SSTableEntry.deserialize(serialized)
+    deserialized, bytes_consumed = deserialize_entry(serialized)
     assert bytes_consumed == len(serialized)
     assert deserialized.key == "deleted_key"
     assert deserialized.sequence == 42
@@ -165,9 +158,9 @@ def test_round_trip_conversion() -> None:
     assert from_wal.entry_type == original.entry_type
     assert from_wal.timestamp == original.timestamp
 
-    # Convert to SSTable and back
-    sst_entry = SSTableEntry.from_database_entry(original)
-    from_sst = sst_entry.to_database_entry()
+    # Convert to SSTable format and back
+    sst_serialized = serialize_entry(original)
+    from_sst, _ = deserialize_entry(sst_serialized)
     
     assert from_sst.key == original.key
     assert from_sst.sequence == original.sequence
