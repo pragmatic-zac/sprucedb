@@ -1,16 +1,14 @@
-import os
 from pathlib import Path
 
 from src.configuration import Configuration
 
 from .wal import WriteAheadLog
-from .sstable import SSTableWriter
 from .skiplist import SkipList
 
 class Database:
     def __init__(self, config: Configuration):
         """
-        Initialize a new database instance.
+        Initialize a new SpruceDB instance.
         
         Args:
             config: Configuration values for the database
