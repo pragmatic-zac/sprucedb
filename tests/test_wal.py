@@ -7,6 +7,7 @@ import zlib
 from datetime import datetime
 
 from src.wal import WALOperationType, WALEntry, WriteAheadLog, MAX_KEY_BYTES, MAX_VALUE_BYTES
+from src.entry import DatabaseEntry, EntryType
 
 
 def test_serialize_put_entry() -> None:
@@ -232,6 +233,49 @@ def test_explicit_close() -> None:
         wal = WriteAheadLog(wal_path)
 
         wal.write_to_log(WALOperationType.PUT, "key1", 0, b"value1")
+        wal.close()
+
+
+def test_unified_entry_integration() -> None:
+    """Test that WAL can work with unified DatabaseEntry format."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wal_path = os.path.join(tmpdir, "test.wal")
+        wal = WriteAheadLog(wal_path)
+        
+        # Create unified database entries
+        put_entry = DatabaseEntry.put("unified_key", 42, b"unified_value", 1234567890)
+        delete_entry = DatabaseEntry.delete("delete_key", 43, 1234567891)
+        
+        # Write entries using the unified interface
+        pos1 = wal.write_to_log(WALOperationType.PUT, put_entry.key, put_entry.sequence, put_entry.value)
+        pos2 = wal.write_to_log(WALOperationType.DELETE, delete_entry.key, delete_entry.sequence)
+        
+        # Read back and verify conversion
+        entry1 = wal.read_log_entry(pos1)
+        entry2 = wal.read_log_entry(pos2)
+        
+        assert entry1 is not None
+        assert entry2 is not None
+        
+        # Convert back to unified format
+        unified1 = entry1.to_database_entry()
+        unified2 = entry2.to_database_entry()
+        
+        # Verify round-trip conversion preserves data
+        assert unified1.key == put_entry.key
+        assert unified1.sequence == put_entry.sequence
+        assert unified1.value == put_entry.value
+        assert unified1.entry_type == put_entry.entry_type
+        # Note: write_to_log() creates its own timestamp, so we don't expect the original timestamp
+        assert unified1.timestamp is not None
+        
+        assert unified2.key == delete_entry.key
+        assert unified2.sequence == delete_entry.sequence
+        assert unified2.value is None
+        assert unified2.entry_type == EntryType.DELETE
+        # Note: write_to_log() creates its own timestamp, so we don't expect the original timestamp
+        assert unified2.timestamp is not None
+        
         wal.close()
 
         assert wal.write_file is None

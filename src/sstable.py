@@ -6,6 +6,8 @@ from datetime import datetime
 from enum import Flag, auto
 from typing import Final, Optional, Tuple, BinaryIO
 
+from .entry import DatabaseEntry, EntryType
+
 """
 SSTable format
 [HEADER] (48 bytes total)
@@ -94,6 +96,27 @@ class SSTableEntry:
     sequence: int
     value: Optional[bytes] = None
 
+    @classmethod
+    def from_database_entry(cls, entry: DatabaseEntry) -> 'SSTableEntry':
+        """Create an SSTableEntry from a unified DatabaseEntry."""
+        if entry.entry_type == EntryType.DELETE:
+            # Use None value to represent tombstone
+            return cls(entry.key, entry.sequence, None)
+        else:
+            return cls(entry.key, entry.sequence, entry.value)
+    
+    def to_database_entry(self) -> DatabaseEntry:
+        """Convert this SSTableEntry to a unified DatabaseEntry."""
+        if self.value is None:
+            # None value represents a tombstone (DELETE)
+            return DatabaseEntry.delete(self.key, self.sequence)
+        else:
+            return DatabaseEntry.put(self.key, self.sequence, self.value)
+    
+    def is_tombstone(self) -> bool:
+        """Check if this entry represents a deletion (tombstone)."""
+        return self.value is None
+
     def serialize(self) -> bytes:
         """
         Serialize entry to bytes in format:
@@ -153,7 +176,10 @@ class SSTableEntry:
         if len(data) < value_offset + value_length:
             raise ValueError("Data too short for value")
 
-        value = data[value_offset:value_offset + value_length]
+        value_bytes = data[value_offset:value_offset + value_length]
+        
+        # Convert empty values to None to represent tombstones
+        value: Optional[bytes] = None if value_length == 0 else value_bytes
 
         bytes_consumed = value_offset + value_length
         return cls(key, sequence, value), bytes_consumed

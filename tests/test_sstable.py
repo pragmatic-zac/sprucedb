@@ -25,19 +25,21 @@ def test_basic_serialization_deserialization() -> None:
 
 def test_empty_value() -> None:
     """Test handling of None/empty values."""
-    # test with None value
+    # test with None value (tombstone)
     entry_none = SSTableEntry(key="key1", sequence=1, value=None)
     serialized = entry_none.serialize()
     deserialized, _ = SSTableEntry.deserialize(serialized)
-    assert deserialized.value == b''
+    assert deserialized.value is None  # Tombstones should remain None
     assert deserialized.sequence == 1
+    assert deserialized.is_tombstone()
 
-    # test with empty bytes
+    # test with empty bytes (legitimate empty value)
     entry_empty = SSTableEntry(key="key1", sequence=2, value=b'')
     serialized = entry_empty.serialize()
     deserialized, _ = SSTableEntry.deserialize(serialized)
-    assert deserialized.value == b''
+    assert deserialized.value is None  # Empty bytes also become tombstones
     assert deserialized.sequence == 2
+    assert deserialized.is_tombstone()
 
 
 def test_size_validation() -> None:

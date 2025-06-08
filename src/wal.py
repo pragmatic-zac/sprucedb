@@ -5,6 +5,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional, BinaryIO
 
+from .entry import DatabaseEntry, EntryType
+
 """
 Write-ahead log entry format
 [4 bytes] CRC32 (uint32)
@@ -45,6 +47,27 @@ class WALEntry:
     @classmethod
     def delete(cls, timestamp: int, key: str, sequence: int) -> 'WALEntry':
         return cls(timestamp, WALOperationType.DELETE, key, sequence, b'')
+
+    @classmethod
+    def from_database_entry(cls, entry: DatabaseEntry, timestamp: Optional[int] = None) -> 'WALEntry':
+        """Create a WALEntry from a unified DatabaseEntry."""
+        # Use DatabaseEntry's timestamp if provided, otherwise use parameter or current time
+        if timestamp is None:
+            timestamp = entry.timestamp if entry.timestamp is not None else int(datetime.utcnow().timestamp())
+        
+        if entry.entry_type == EntryType.PUT:
+            if entry.value is None:
+                raise ValueError("PUT entries must have a value")
+            return cls.put(timestamp, entry.key, entry.value, entry.sequence)
+        else:
+            return cls.delete(timestamp, entry.key, entry.sequence)
+    
+    def to_database_entry(self) -> DatabaseEntry:
+        """Convert this WALEntry to a unified DatabaseEntry."""
+        if self.op_type == WALOperationType.PUT:
+            return DatabaseEntry.put(self.key, self.sequence, self.value, self.timestamp)
+        else:
+            return DatabaseEntry.delete(self.key, self.sequence, self.timestamp)
 
     @property
     def timestamp(self) -> int:
