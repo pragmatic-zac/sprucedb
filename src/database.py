@@ -17,7 +17,7 @@ class Database:
         self.base_path = Path(config.base_path)
         self.sstables_dir = self.base_path / "sstables"
         self.wal_dir = self.base_path / "wal"
-        self.manifest_path = self.base_path / "manifest"
+        self.manifest_dir = self.base_path / "manifest"
         
         # Initialize directory structure
         self._init_directories()
@@ -26,7 +26,7 @@ class Database:
         self.memtable: SkipList = SkipList()
         self.wal: WriteAheadLog = WriteAheadLog(str(self._init_wal_path()))
 
-        self.seq_no: int = 0
+        self.seq_no: int = 0 # TODO - load this from existing files on startup
         
     def _init_directories(self) -> None:
         """Create necessary directory structure if it doesn't exist."""
@@ -35,10 +35,7 @@ class Database:
             self.base_path.mkdir(parents=True, exist_ok=True)
             self.sstables_dir.mkdir(exist_ok=True)
             self.wal_dir.mkdir(exist_ok=True)
-            
-            # Create empty manifest file if it doesn't exist
-            if not self.manifest_path.exists():
-                self.manifest_path.touch()
+            self.manifest_dir.mkdir(exist_ok=True)
                 
         except OSError as e:
             raise RuntimeError(f"Failed to initialize database directories: {e}")
