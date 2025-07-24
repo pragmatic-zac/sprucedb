@@ -248,51 +248,36 @@ class WriteAheadLog:
     def __exit__(self, exc_type: Optional[type], exc_val: Optional[Exception], exc_tb: Optional[object]) -> None:
         self.close()
 
-    def write_to_log(self, op_type: WALOperationType, key: str, sequence: int, value: Optional[bytes] = None) -> int:
+    def write_to_log(self, entry: DatabaseEntry) -> int:
         """
-        Write an operation to the WAL.
+        Write a unified DatabaseEntry to the WAL.
 
         Args:
-            op_type: Type of operation (PUT or DELETE)
-            key: Key being operated on
-            sequence: Global sequence number for this operation
-            value: Value to store (None for DELETE operations)
+            entry: DatabaseEntry instance to write.
 
         Returns:
-            int: Position where the entry was written
+            int: Byte offset where the entry was written.
 
         Raises:
-            RuntimeError: If WAL file is not available
-            ValueError: If key/value validation fails
-            IOError: If write fails
+            RuntimeError: If the WAL is not currently writable.
+            ValueError: If the entry violates WAL size constraints.
+            IOError:   If the underlying file write fails.
         """
         if not self.write_file:
             raise RuntimeError('WAL file not available!')
 
-        if not key:
-            raise ValueError('key is required')
-
-        if len(key.encode()) > MAX_KEY_BYTES:
+        # Validate key/value size constraints that are WAL-specific
+        if len(entry.key.encode()) > MAX_KEY_BYTES:
             raise ValueError('key exceeds max size')
 
-        if sequence < 0:
-            raise ValueError('sequence number must be non-negative')
-
-        if op_type == WALOperationType.PUT and value is not None:
-            if len(value) > MAX_VALUE_BYTES:
+        if entry.entry_type == EntryType.PUT and entry.value is not None:
+            if len(entry.value) > MAX_VALUE_BYTES:
                 raise ValueError(f'value exceeds max size of {MAX_VALUE_BYTES} bytes')
 
-        timestamp = int(datetime.utcnow().timestamp())
+        # Convert to a WALEntry (adds timestamp if missing)
+        wal_entry = WALEntry.from_database_entry(entry)
 
-        entry = None
-        if op_type == WALOperationType.DELETE:
-            entry = WALEntry.delete(timestamp, key, sequence)
-        else:
-            if value is None:
-                raise ValueError('value is required for PUT operations')
-            entry = WALEntry.put(timestamp, key, value, sequence)
-
-        serialized_entry = entry.serialize()
+        serialized_entry = wal_entry.serialize()
         current_position = self.write_position
         bytes_written = self.write_file.write(serialized_entry)
         self.write_position = current_position + bytes_written

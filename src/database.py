@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from src.configuration import Configuration
+from src.entry import DatabaseEntry
 
 from .wal import WriteAheadLog
 from .skiplist import SkipList
@@ -24,6 +25,8 @@ class Database:
         # Initialize components
         self.memtable: SkipList = SkipList()
         self.wal: WriteAheadLog = WriteAheadLog(str(self._init_wal_path()))
+
+        self.seq_no: int = 0
         
     def _init_directories(self) -> None:
         """Create necessary directory structure if it doesn't exist."""
@@ -52,3 +55,15 @@ class Database:
         """Safely close the database."""
         if self.wal:
             self.wal.close()
+
+    def _get_next_sequence(self) -> int:
+        self.seq_no = self.seq_no + 1
+        return self.seq_no
+
+    def put(self, key: str, value: bytes) -> None:
+        seq_num = self._get_next_sequence()
+
+        entry = DatabaseEntry.put(key, seq_num, value)
+        self.wal.write_to_log(entry)
+
+        self.memtable.insert(key, entry)
