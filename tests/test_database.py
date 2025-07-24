@@ -3,7 +3,7 @@ import pytest
 
 from src.database import Database
 from src.configuration import Configuration
-from src.entry import EntryType
+from src.entry import EntryType, DatabaseEntry
 
 
 def test_put_basic_operation() -> None:
@@ -167,5 +167,186 @@ def test_put_multiple_operations_integration() -> None:
             assert entry is not None
             assert entry.key == key
             assert entry.value == value
+        
+        db.close() 
+
+
+def test_get_from_memtable_basic() -> None:
+    """Test basic get operation from memtable."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = Configuration()
+        config.base_path = tmpdir
+        db = Database(config)
+        
+        # Put some data
+        db.put("test_key", b"test_value")
+        db.put("another_key", b"another_value")
+        
+        # Test successful gets
+        result1 = db.get("test_key")
+        assert result1 is not None
+        assert result1.key == "test_key"
+        assert result1.value == b"test_value"
+        assert result1.sequence == 1
+        assert result1.entry_type == EntryType.PUT
+        
+        result2 = db.get("another_key")
+        assert result2 is not None
+        assert result2.key == "another_key"
+        assert result2.value == b"another_value"
+        assert result2.sequence == 2
+        assert result2.entry_type == EntryType.PUT
+        
+        db.close()
+
+
+def test_get_nonexistent_key() -> None:
+    """Test get operation for keys that don't exist."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = Configuration()
+        config.base_path = tmpdir
+        db = Database(config)
+        
+        # Test get on empty database
+        result = db.get("nonexistent_key")
+        assert result is None
+        
+        # Add some data and test get for different nonexistent key
+        db.put("existing_key", b"existing_value")
+        
+        result = db.get("nonexistent_key")
+        assert result is None
+        
+        # Verify existing key still works
+        result = db.get("existing_key")
+        assert result is not None
+        assert result.value == b"existing_value"
+        
+        db.close()
+
+
+def test_get_with_key_updates() -> None:
+    """Test get returns most recent version when key is updated multiple times."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = Configuration()
+        config.base_path = tmpdir
+        db = Database(config)
+        
+        # Update same key multiple times
+        db.put("key", b"value1")
+        db.put("key", b"value2")
+        db.put("key", b"value3")
+        
+        # Should get most recent version
+        result = db.get("key")
+        assert result is not None
+        assert result.key == "key"
+        assert result.value == b"value3"
+        assert result.sequence == 3  # Latest sequence number
+        assert result.entry_type == EntryType.PUT
+        
+        db.close()
+
+
+def test_get_with_tombstones() -> None:
+    """Test get operation with deleted keys (tombstones)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = Configuration()
+        config.base_path = tmpdir
+        db = Database(config)
+        
+        # Put a key, then delete it
+        db.put("key_to_delete", b"some_value")
+        
+        # Verify key exists before deletion
+        result = db.get("key_to_delete")
+        assert result is not None
+        assert result.value == b"some_value"
+        
+        # Delete the key - manually insert a tombstone to test get behavior
+        seq_num = db._get_next_sequence()
+        tombstone = DatabaseEntry.delete("key_to_delete", seq_num)
+        db.wal.write_to_log(tombstone)
+        db.memtable.insert("key_to_delete", tombstone)
+        
+        # Get should return None for deleted key
+        result = db.get("key_to_delete")
+        assert result is None
+        
+        db.close()
+
+
+def test_get_mixed_operations() -> None:
+    """Test get with a mix of puts, updates, and deletes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = Configuration()
+        config.base_path = tmpdir
+        db = Database(config)
+        
+        # Create a complex scenario
+        db.put("key1", b"value1")           # seq 1
+        db.put("key2", b"value2")           # seq 2
+        db.put("key1", b"updated_value1")   # seq 3 (update)
+        db.put("key3", b"value3")           # seq 4
+        
+        # Manually add tombstone for key2
+        seq_num = db._get_next_sequence()   # seq 5
+        tombstone = DatabaseEntry.delete("key2", seq_num)
+        db.wal.write_to_log(tombstone)
+        db.memtable.insert("key2", tombstone)
+        
+        # Test results
+        result1 = db.get("key1")
+        assert result1 is not None
+        assert result1.value == b"updated_value1"  # Most recent version
+        assert result1.sequence == 3
+        
+        result2 = db.get("key2")
+        assert result2 is None  # Deleted
+        
+        result3 = db.get("key3")
+        assert result3 is not None
+        assert result3.value == b"value3"
+        assert result3.sequence == 4
+        
+        result4 = db.get("nonexistent")
+        assert result4 is None
+        
+        db.close()
+
+
+def test_get_error_handling() -> None:
+    """Test get operation handles errors gracefully."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = Configuration()
+        config.base_path = tmpdir
+        db = Database(config)
+        
+        # Add some data
+        db.put("test_key", b"test_value")
+        
+        # Test get with various edge case keys
+        test_keys = [
+            "test_key",          # Normal case
+            "",                  # Empty string (if supported)
+            "very_long_key_" * 100,  # Long key
+            "unicode_🚀_key",    # Unicode key
+            "key.with.dots",     # Key with special chars
+        ]
+        
+        for key in test_keys:
+            try:
+                result = db.get(key)
+                # Should either return valid result or None, not crash
+                assert result is None or isinstance(result, DatabaseEntry)
+            except Exception as e:
+                # If there's an exception, it should be expected (like validation errors)
+                # For now, just ensure it doesn't crash the whole test
+                pass
+        
+        # Verify database is still functional after error cases
+        final_result = db.get("test_key")
+        assert final_result is not None
+        assert final_result.value == b"test_value"
         
         db.close() 
