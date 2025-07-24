@@ -73,6 +73,8 @@ class Database:
         entry = DatabaseEntry.put(key, seq_num, value)
         self.wal.write_to_log(entry)
 
+        # TODO - add deferred commit until after memtable insert
+        # right now we could end up in an inconsistent state if WAL succeeds but memtable fails
         self.memtable.insert(key, entry)
 
     def get(self, key: str) -> DatabaseEntry | None:
