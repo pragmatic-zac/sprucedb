@@ -6,6 +6,7 @@ from typing import Optional
 class Configuration:
     def __init__(self) -> None:
         self.base_path: str = os.environ.get("SPRUCE_BASE_PATH", "spruce_data")
+        self.memtable_flush_threshold: int = int(os.environ.get("SPRUCE_FLUSH_THRESHOLD", 4200000))
         
         # Logging configuration
         self.log_level: str = os.environ.get("SPRUCE_LOG_LEVEL", "INFO").upper()

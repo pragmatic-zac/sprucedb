@@ -66,6 +66,9 @@ class Database:
     def _get_next_sequence(self) -> int:
         self.seq_no = self.seq_no + 1
         return self.seq_no
+    
+    def _should_flush(self) -> bool:
+        return self.memtable.size >= self.config.memtable_flush_threshold
 
     def put(self, key: str, value: bytes) -> None:
         seq_num = self._get_next_sequence()
@@ -76,6 +79,10 @@ class Database:
         # TODO - add deferred commit until after memtable insert
         # right now we could end up in an inconsistent state if WAL succeeds but memtable fails
         self.memtable.insert(key, entry)
+
+        if self._should_flush():
+            # could also consider checking every N inserts instead of every single time
+            print('TODO - flush to sstable!')
 
     def get(self, key: str) -> DatabaseEntry | None:
         # Search memtable first (most recent data)
