@@ -112,3 +112,10 @@ class Database:
                 continue
 
         return None
+    
+    def delete(self, key: str) -> None:
+        seq_num = self._get_next_sequence()
+        entry = DatabaseEntry.delete(key, seq_num)
+
+        self.wal.write_to_log(entry)
+        self.memtable.insert(key, entry)

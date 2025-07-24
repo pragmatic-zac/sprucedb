@@ -276,45 +276,6 @@ def test_get_with_tombstones() -> None:
         db.close()
 
 
-def test_get_mixed_operations() -> None:
-    """Test get with a mix of puts, updates, and deletes."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        config = Configuration()
-        config.base_path = tmpdir
-        db = Database(config)
-        
-        # Create a complex scenario
-        db.put("key1", b"value1")           # seq 1
-        db.put("key2", b"value2")           # seq 2
-        db.put("key1", b"updated_value1")   # seq 3 (update)
-        db.put("key3", b"value3")           # seq 4
-        
-        # Manually add tombstone for key2
-        seq_num = db._get_next_sequence()   # seq 5
-        tombstone = DatabaseEntry.delete("key2", seq_num)
-        db.wal.write_to_log(tombstone)
-        db.memtable.insert("key2", tombstone)
-        
-        # Test results
-        result1 = db.get("key1")
-        assert result1 is not None
-        assert result1.value == b"updated_value1"  # Most recent version
-        assert result1.sequence == 3
-        
-        result2 = db.get("key2")
-        assert result2 is None  # Deleted
-        
-        result3 = db.get("key3")
-        assert result3 is not None
-        assert result3.value == b"value3"
-        assert result3.sequence == 4
-        
-        result4 = db.get("nonexistent")
-        assert result4 is None
-        
-        db.close()
-
-
 def test_get_error_handling() -> None:
     """Test get operation handles errors gracefully."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -339,7 +300,7 @@ def test_get_error_handling() -> None:
                 result = db.get(key)
                 # Should either return valid result or None, not crash
                 assert result is None or isinstance(result, DatabaseEntry)
-            except Exception as e:
+            except Exception:
                 # If there's an exception, it should be expected (like validation errors)
                 # For now, just ensure it doesn't crash the whole test
                 pass
@@ -348,5 +309,129 @@ def test_get_error_handling() -> None:
         final_result = db.get("test_key")
         assert final_result is not None
         assert final_result.value == b"test_value"
+        
+        db.close() 
+
+
+def test_delete_basic_operation() -> None:
+    """Test basic delete operation integrates WAL and memtable correctly."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = Configuration()
+        config.base_path = tmpdir
+        db = Database(config)
+        
+        # Put some data first
+        db.put("test_key", b"test_value")
+        initial_seq = db.seq_no
+        
+        # Delete the key
+        db.delete("test_key")
+        
+        # Verify sequence number was incremented
+        assert db.seq_no == initial_seq + 1
+        
+        # Verify memtable contains tombstone entry with correct data
+        entry = db.memtable.search("test_key")
+        assert entry is not None
+        assert entry.key == "test_key"
+        assert entry.value is None  # Tombstones have None values
+        assert entry.sequence == initial_seq + 1
+        assert entry.entry_type == EntryType.DELETE
+        assert entry.is_tombstone() is True
+        
+        # Verify WAL was written (by checking that position advanced)
+        assert db.wal.write_position > 0
+        
+        db.close()
+
+
+def test_delete_then_get() -> None:
+    """Test that deleted keys return None when retrieved."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = Configuration()
+        config.base_path = tmpdir
+        db = Database(config)
+        
+        # Put then delete a key
+        db.put("key_to_delete", b"some_value")
+        
+        # Verify key exists before deletion
+        result = db.get("key_to_delete")
+        assert result is not None
+        assert result.value == b"some_value"
+        
+        # Delete the key
+        db.delete("key_to_delete")
+        
+        # Get should return None for deleted key
+        result = db.get("key_to_delete")
+        assert result is None
+        
+        # Verify other keys are unaffected
+        db.put("other_key", b"other_value")
+        result = db.get("other_key")
+        assert result is not None
+        assert result.value == b"other_value"
+        
+        db.close()
+
+
+def test_delete_exception_propagation() -> None:
+    """Test that exceptions from delete operations bubble up correctly."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = Configuration()
+        config.base_path = tmpdir
+        db = Database(config)
+        
+        # Test ValueError from DatabaseEntry validation (empty key)
+        with pytest.raises(ValueError, match="key cannot be empty"):
+            db.delete("")
+        
+        # Test ValueError from WAL size constraints (key too large)
+        large_key = "x" * 70000  # Exceeds MAX_KEY_BYTES (65536)
+        with pytest.raises(ValueError, match="key exceeds max size"):
+            db.delete(large_key)
+        
+        # Verify database state remains consistent after exceptions
+        # Note: sequence numbers are consumed even on failed operations (expected behavior)
+        assert db.seq_no == 2  # Two failed operations consumed sequence numbers
+        assert db.memtable.search("") is None
+        assert db.memtable.search(large_key) is None
+        
+        db.close()
+
+
+def test_multiple_operations_integration() -> None:
+    """Test complex scenarios with puts, updates, and deletes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = Configuration()
+        config.base_path = tmpdir
+        db = Database(config)
+        
+        # Complex scenario: put -> update -> delete -> put again
+        db.put("key", b"value1")           # seq 1
+        db.put("key", b"value2")           # seq 2 (update)
+        db.delete("key")                   # seq 3 (delete)
+        db.put("key", b"value3")           # seq 4 (put after delete)
+        
+        # The final get should return the latest put (after delete)
+        result = db.get("key")
+        assert result is not None
+        assert result.value == b"value3"
+        assert result.sequence == 4
+        assert result.entry_type == EntryType.PUT
+        
+        # Test deleting a key that doesn't exist
+        db.delete("never_existed")         # seq 5
+        
+        # Should still return None
+        result = db.get("never_existed")
+        assert result is None
+        
+        # Verify the tombstone was created
+        tombstone = db.memtable.search("never_existed")
+        assert tombstone is not None
+        assert tombstone.entry_type == EntryType.DELETE
+        assert tombstone.sequence == 5
         
         db.close() 
