@@ -64,3 +64,9 @@ class Database:
         self.wal.write_to_log(entry)
 
         self.memtable.insert(key, entry)
+
+    def get(self, key: str) -> DatabaseEntry | None:
+        # check every single level - returning as soon as I find the value
+        # read from memtable first
+        # if not found there, read from sstables from newest to oldest
+        return None
