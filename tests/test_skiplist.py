@@ -1,5 +1,4 @@
 from src.skiplist import SkipList
-from typing import NoReturn
 
 def test_basic_insert_and_search() -> None:
     skiplist = SkipList[int]()
@@ -102,3 +101,58 @@ def test_delete_nonexistent_key() -> None:
     
     # Verify the existing value is still there
     assert skiplist.search(5) == 100
+
+def test_duplicate_inserts_comprehensive() -> None:
+    skiplist = SkipList[str]()
+    
+    # Insert initial value
+    skiplist.insert(1, "first")
+    initial_size = skiplist.size
+    
+    # Insert duplicate with same size value
+    skiplist.insert(1, "second")
+    # Size should remain roughly the same (may have small differences due to string content)
+    
+    # Verify the value was updated
+    assert skiplist.search(1) == "second"
+    
+    # Insert duplicate with different size value
+    skiplist.insert(1, "much_longer_string_value")
+    # Size should have increased
+    larger_size = skiplist.size
+    assert larger_size > initial_size
+    
+    # Verify the value was updated again
+    assert skiplist.search(1) == "much_longer_string_value"
+    
+    # Insert duplicate with smaller value
+    skiplist.insert(1, "short")
+    smaller_size = skiplist.size
+    assert smaller_size < larger_size
+    
+    # Verify the value was updated
+    assert skiplist.search(1) == "short"
+    
+    # Test multiple consecutive duplicates
+    for i in range(5):
+        skiplist.insert(1, f"value_{i}")
+    
+    # Should have the last inserted value
+    assert skiplist.search(1) == "value_4"
+    
+    # Insert other keys to ensure skiplist structure is intact
+    skiplist.insert(2, "key2")
+    skiplist.insert(3, "key3")
+    
+    # Verify all values are accessible
+    assert skiplist.search(1) == "value_4"
+    assert skiplist.search(2) == "key2"
+    assert skiplist.search(3) == "key3"
+    
+    # Insert duplicate for key 2
+    skiplist.insert(2, "updated_key2")
+    
+    # Verify all values are still accessible and correct
+    assert skiplist.search(1) == "value_4"
+    assert skiplist.search(2) == "updated_key2"
+    assert skiplist.search(3) == "key3"
