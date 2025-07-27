@@ -3,7 +3,7 @@ import struct
 import zlib
 from datetime import datetime
 from enum import Enum
-from typing import Optional, BinaryIO
+from typing import Optional, BinaryIO, Iterator
 
 from .entry import DatabaseEntry, EntryType
 
@@ -388,3 +388,117 @@ class WriteAheadLog:
             raise ValueError("Incomplete payload")
 
         return WALEntry.deserialize(header_bytes + payload_bytes)
+
+    @staticmethod
+    def read_all_entries(file_path: str) -> Iterator[WALEntry]:
+        """
+        Read all entries from a WAL file, handling corruption gracefully.
+        
+        This method continues reading even if individual entries are corrupted,
+        logging warnings for corrupted entries but not failing the entire read.
+        
+        Args:
+            file_path: Path to the WAL file to read
+            
+        Yields:
+            WALEntry: Valid entries from the WAL file
+        """
+        import logging
+        logger = logging.getLogger("sprucedb.wal.replay")
+        
+        try:
+            with open(file_path, 'rb') as file:
+                position = 0
+                entry_count = 0
+                corruption_count = 0
+                
+                while True:
+                    try:
+                        file.seek(position)
+                        
+                        # Try to read header
+                        header_bytes = file.read(WALEntry.HEADER_SIZE)
+                        if not header_bytes:
+                            break  # EOF
+                        
+                        if len(header_bytes) < WALEntry.HEADER_SIZE:
+                            logger.warning("Incomplete header at position %d in %s, stopping replay", 
+                                         position, file_path)
+                            break
+                        
+                        # Extract payload size from header
+                        _, _, _, _, key_len, value_len = struct.unpack(WALEntry.HEADER_FORMAT, header_bytes)
+                        
+                        # Read payload
+                        payload_size = key_len + value_len
+                        payload_bytes = file.read(payload_size)
+                        
+                        if len(payload_bytes) < payload_size:
+                            logger.warning("Incomplete payload at position %d in %s, stopping replay", 
+                                         position, file_path)
+                            break
+                        
+                        # Try to deserialize complete entry
+                        entry_data = header_bytes + payload_bytes
+                        entry = WALEntry.deserialize(entry_data)
+                        
+                        yield entry
+                        entry_count += 1
+                        position += len(entry_data)
+                        
+                    except ValueError as e:
+                        corruption_count += 1
+                        logger.warning("Corrupted entry at position %d in %s: %s", 
+                                     position, file_path, e)
+                        
+                        # Try to find the next valid entry by scanning ahead
+                        position += 1
+                        if position >= os.path.getsize(file_path):
+                            break
+                            
+                    except Exception as e:
+                        logger.error("Unexpected error reading WAL file %s at position %d: %s", 
+                                   file_path, position, e)
+                        break
+                
+                logger.info("WAL replay from %s: %d entries read, %d corruptions skipped", 
+                           file_path, entry_count, corruption_count)
+                           
+        except OSError as e:
+            logger.error("Failed to open WAL file %s for replay: %s", file_path, e)
+            # Don't yield anything if we can't open the file
+            return
+
+    @staticmethod
+    def has_flush_marker_at_end(file_path: str) -> bool:
+        """
+        Check if a WAL file ends with a FLUSH marker.
+        
+        This method uses read_all_entries logic to sequentially
+        read through the file and check the last valid entry.
+        Could be optimized to not read the entire file, but this
+        works for now.
+        """
+        import logging
+        logger = logging.getLogger("sprucedb.wal.check")
+        
+        try:
+            entries = list(WriteAheadLog.read_all_entries(file_path))
+            
+            if not entries:
+                return False  # Empty file has no FLUSH marker
+            
+            # Check if the last valid entry is a FLUSH marker
+            last_entry = entries[-1]
+            is_flush = last_entry.is_flush_marker()
+            
+            if is_flush:
+                logger.debug("WAL file %s ends with FLUSH marker (SSTable: %s)", 
+                           file_path, last_entry.get_flushed_sstable_id())
+            
+            return is_flush
+            
+        except Exception as e:
+            logger.warning("Error checking for FLUSH marker in %s: %s", file_path, e)
+            # If we can't determine, assume it needs replay (safer default)
+            return False

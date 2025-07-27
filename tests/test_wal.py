@@ -210,7 +210,7 @@ def test_file_closure_and_sync() -> None:
         wal_path = os.path.join(tmpdir, "test.wal")
 
         with WriteAheadLog(wal_path) as wal:
-            pos = wal.write_to_log(DatabaseEntry.put("key1", 0, b"value1"))
+            _ = wal.write_to_log(DatabaseEntry.put("key1", 0, b"value1"))
             actual_file_path = wal.current_path
 
         # verify file is closed
@@ -302,6 +302,64 @@ def test_read_log_entry() -> None:
         assert result.sequence == 0  # First entry should have sequence 0
 
 
+def test_has_flush_marker_at_end_comprehensive() -> None:
+    """Test the robust FLUSH marker detection method with various scenarios."""
+    import tempfile
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Test 1: WAL file ending with FLUSH marker
+        wal_path_1 = os.path.join(tmpdir, "test1.wal")
+        wal1 = WriteAheadLog(wal_path_1)
+        
+        # Add regular entries followed by FLUSH marker
+        wal1.write_to_log(DatabaseEntry.put("key1", 1, b"value1"))
+        wal1.write_to_log(DatabaseEntry.delete("key2", 2))
+        wal1.write_flush_marker("sstable_123", 3)
+        
+        actual_path_1 = wal1.current_path
+        wal1.close()
+        
+        # Should detect FLUSH marker
+        assert WriteAheadLog.has_flush_marker_at_end(actual_path_1) is True
+        
+        # Test 2: WAL file NOT ending with FLUSH marker
+        wal_path_2 = os.path.join(tmpdir, "test2.wal")
+        wal2 = WriteAheadLog(wal_path_2)
+        
+        # Add only regular entries (no FLUSH marker)
+        wal2.write_to_log(DatabaseEntry.put("key1", 1, b"value1"))
+        wal2.write_to_log(DatabaseEntry.put("key2", 2, b"value2"))
+        
+        actual_path_2 = wal2.current_path
+        wal2.close()
+        
+        # Should NOT detect FLUSH marker
+        assert WriteAheadLog.has_flush_marker_at_end(actual_path_2) is False
+        
+        # Test 3: Empty WAL file
+        empty_path = os.path.join(tmpdir, "empty.wal")
+        with open(empty_path, 'wb') as _:
+            pass  # Create empty file
+        
+        # Empty file should return False
+        assert WriteAheadLog.has_flush_marker_at_end(empty_path) is False
+        
+        # Test 4: WAL with FLUSH marker in middle but not at end
+        wal_path_3 = os.path.join(tmpdir, "test3.wal")
+        wal3 = WriteAheadLog(wal_path_3)
+        
+        # Add entries, then FLUSH marker, then more entries
+        wal3.write_to_log(DatabaseEntry.put("key1", 1, b"value1"))
+        wal3.write_flush_marker("sstable_456", 2)  # FLUSH in middle
+        wal3.write_to_log(DatabaseEntry.put("key2", 3, b"value2"))  # Entry after FLUSH
+        
+        actual_path_3 = wal3.current_path
+        wal3.close()
+        
+        # Should NOT detect FLUSH marker since it's not at the end
+        assert WriteAheadLog.has_flush_marker_at_end(actual_path_3) is False
+
+
 def test_sequence_number_increment() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         wal_path = os.path.join(tmpdir, "test.wal")
@@ -335,7 +393,7 @@ def test_sequence_number_persists_after_rotation() -> None:
         wal.write_to_log(DatabaseEntry.put("key2", 1, b"value2"))
 
         # Rotate the file
-        old_path = wal.rotate("sst_001", 2)  # Next sequence would be 2
+        _ = wal.rotate("sst_001", 2)  # Next sequence would be 2
 
         # Write more entries after rotation with continuing sequence numbers
         pos3 = wal.write_to_log(DatabaseEntry.put("key3", 2, b"value3"))
