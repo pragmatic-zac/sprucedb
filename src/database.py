@@ -105,14 +105,14 @@ class Database:
             self._flush_memtable_to_sstable()
 
 
-    def get(self, key: str) -> DatabaseEntry | None:
+    def get(self, key: str) -> bytes | None:
         # Search memtable first (most recent data)
         memtable_result = self.memtable.search(key)
         if memtable_result is not None:
             # Handle tombstones from memtable
             if memtable_result.is_tombstone():
                 return None
-            return memtable_result
+            return memtable_result.value
 
         # Search SSTables from newest to oldest
         sst_files = [
@@ -133,7 +133,7 @@ class Database:
                     if result:
                         if result.is_tombstone():
                             return None
-                        return result
+                        return result.value
                 finally:
                     reader.close()
             except Exception as e:

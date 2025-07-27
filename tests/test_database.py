@@ -184,18 +184,10 @@ def test_get_from_memtable_basic() -> None:
         
         # Test successful gets
         result1 = db.get("test_key")
-        assert result1 is not None
-        assert result1.key == "test_key"
-        assert result1.value == b"test_value"
-        assert result1.sequence == 1
-        assert result1.entry_type == EntryType.PUT
+        assert result1 == b"test_value"
         
         result2 = db.get("another_key")
-        assert result2 is not None
-        assert result2.key == "another_key"
-        assert result2.value == b"another_value"
-        assert result2.sequence == 2
-        assert result2.entry_type == EntryType.PUT
+        assert result2 == b"another_value"
         
         db.close()
 
@@ -219,8 +211,7 @@ def test_get_nonexistent_key() -> None:
         
         # Verify existing key still works
         result = db.get("existing_key")
-        assert result is not None
-        assert result.value == b"existing_value"
+        assert result == b"existing_value"
         
         db.close()
 
@@ -239,11 +230,7 @@ def test_get_with_key_updates() -> None:
         
         # Should get most recent version
         result = db.get("key")
-        assert result is not None
-        assert result.key == "key"
-        assert result.value == b"value3"
-        assert result.sequence == 3  # Latest sequence number
-        assert result.entry_type == EntryType.PUT
+        assert result == b"value3"
         
         db.close()
 
@@ -260,8 +247,7 @@ def test_get_with_tombstones() -> None:
         
         # Verify key exists before deletion
         result = db.get("key_to_delete")
-        assert result is not None
-        assert result.value == b"some_value"
+        assert result == b"some_value"
         
         # Delete the key - manually insert a tombstone to test get behavior
         seq_num = db._get_next_sequence()
@@ -299,7 +285,7 @@ def test_get_error_handling() -> None:
             try:
                 result = db.get(key)
                 # Should either return valid result or None, not crash
-                assert result is None or isinstance(result, DatabaseEntry)
+                assert result is None or isinstance(result, bytes)
             except Exception:
                 # If there's an exception, it should be expected (like validation errors)
                 # For now, just ensure it doesn't crash the whole test
@@ -307,8 +293,7 @@ def test_get_error_handling() -> None:
         
         # Verify database is still functional after error cases
         final_result = db.get("test_key")
-        assert final_result is not None
-        assert final_result.value == b"test_value"
+        assert final_result == b"test_value"
         
         db.close() 
 
@@ -357,8 +342,7 @@ def test_delete_then_get() -> None:
         
         # Verify key exists before deletion
         result = db.get("key_to_delete")
-        assert result is not None
-        assert result.value == b"some_value"
+        assert result == b"some_value"
         
         # Delete the key
         db.delete("key_to_delete")
@@ -370,8 +354,7 @@ def test_delete_then_get() -> None:
         # Verify other keys are unaffected
         db.put("other_key", b"other_value")
         result = db.get("other_key")
-        assert result is not None
-        assert result.value == b"other_value"
+        assert result == b"other_value"
         
         db.close()
 
@@ -416,10 +399,7 @@ def test_multiple_operations_integration() -> None:
         
         # The final get should return the latest put (after delete)
         result = db.get("key")
-        assert result is not None
-        assert result.value == b"value3"
-        assert result.sequence == 4
-        assert result.entry_type == EntryType.PUT
+        assert result == b"value3"
         
         # Test deleting a key that doesn't exist
         db.delete("never_existed")         # seq 5
