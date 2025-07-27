@@ -3,7 +3,7 @@ from pathlib import Path
 
 from src.configuration import Configuration
 from src.entry import DatabaseEntry
-from src.sstable import SSTableReader
+from src.sstable import SSTableReader, SSTableWriter
 
 from .wal import WriteAheadLog
 from .skiplist import SkipList
@@ -69,6 +69,19 @@ class Database:
     
     def _should_flush(self) -> bool:
         return self.memtable.size >= self.config.memtable_flush_threshold
+    
+    def _flush_memtable_to_sstable(self) -> None:
+        # use generator from memtable to feed data to SSTableWriter
+        writer = SSTableWriter(base_path=str(self.sstables_dir))
+        for entry in self.memtable:
+            writer.add_entry(entry)
+        
+        # update WAL with flush marker
+        print('mark WAL with flush')
+
+        # reset memtable - but TODO, could this cause data loss?
+        # if data is written to current memtable after flush but before replacement?
+        self.memtable = SkipList()
 
     def put(self, key: str, value: bytes) -> None:
         seq_num = self._get_next_sequence()
@@ -80,9 +93,10 @@ class Database:
         # right now we could end up in an inconsistent state if WAL succeeds but memtable fails
         self.memtable.insert(key, entry)
 
+        # could also consider checking every N inserts instead of every single time
         if self._should_flush():
-            # could also consider checking every N inserts instead of every single time
-            print('TODO - flush to sstable!')
+            self._flush_memtable_to_sstable()
+
 
     def get(self, key: str) -> DatabaseEntry | None:
         # Search memtable first (most recent data)
