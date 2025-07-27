@@ -76,8 +76,15 @@ class Database:
         for entry in self.memtable:
             writer.add_entry(entry)
         
-        # update WAL with flush marker
-        print('mark WAL with flush')
+        # Get the SSTable ID before finalizing
+        sstable_id = writer.sstable_id
+        
+        # Finalize the SSTable
+        writer.finalize()
+        
+        # rotate WAL with the actual SSTable ID
+        old_path = self.wal.rotate(sstable_id=sstable_id, sequence=self._get_next_sequence())
+        self.logger.debug(f'Rotated WAL - closed file -> {old_path}')
 
         # reset memtable - but TODO, could this cause data loss?
         # if data is written to current memtable after flush but before replacement?

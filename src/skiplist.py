@@ -1,7 +1,6 @@
 from typing import Iterator, Optional, Protocol, TypeVar, Generic, List, Any
 import random
 
-from entry import DatabaseEntry
 
 T = TypeVar('T')
 C = TypeVar('C', bound='Comparable')
@@ -140,11 +139,11 @@ class SkipList(Generic[T]):
             while self.level > 0 and self.head.forward[self.level] is None:
                 self.level -= 1
 
-    def __iter__(self) -> Iterator[DatabaseEntry]:
+    def __iter__(self) -> Iterator[T]:
         # Start from the first actual node (skip the head sentinel)
         current: Optional[Node[T]] = self.head.forward[0]
         while current is not None:
-            # Yield the value stored in the node, which is a DatabaseEntry
+            # Yield the value stored in the node
             if current.value is not None:
                 yield current.value
             current = current.forward[0]

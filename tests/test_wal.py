@@ -159,7 +159,7 @@ def test_basic_write_and_rotation() -> None:
         assert pos2 > pos1
 
         # rotate the file
-        old_path = wal.rotate("sst_001")
+        old_path = wal.rotate("sst_001", 2)  # Next sequence would be 2
         assert os.path.exists(old_path)
 
         # verify we can still write after rotation
@@ -335,7 +335,7 @@ def test_sequence_number_persists_after_rotation() -> None:
         wal.write_to_log(DatabaseEntry.put("key2", 1, b"value2"))
 
         # Rotate the file
-        old_path = wal.rotate("sst_001")
+        old_path = wal.rotate("sst_001", 2)  # Next sequence would be 2
 
         # Write more entries after rotation with continuing sequence numbers
         pos3 = wal.write_to_log(DatabaseEntry.put("key3", 2, b"value3"))

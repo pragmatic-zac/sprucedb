@@ -25,6 +25,7 @@ MAX_VALUE_BYTES = 1024 * 1024  # 1MB max value size, consistent with SSTable
 class WALOperationType(Enum):
     PUT = 1
     DELETE = 2
+    FLUSH = 3
 
 
 class WALEntry:
@@ -47,6 +48,11 @@ class WALEntry:
     @classmethod
     def delete(cls, timestamp: int, key: str, sequence: int) -> 'WALEntry':
         return cls(timestamp, WALOperationType.DELETE, key, sequence, b'')
+    
+    @classmethod
+    def flush(cls, timestamp: int, sequence: int) -> 'WALEntry':
+        """Create a flush marker entry."""
+        return cls(timestamp=timestamp, op_type=WALOperationType.FLUSH, key="", sequence=sequence, value=b'')
 
     @classmethod
     def from_database_entry(cls, entry: DatabaseEntry, timestamp: Optional[int] = None) -> 'WALEntry':
@@ -66,8 +72,11 @@ class WALEntry:
         """Convert this WALEntry to a unified DatabaseEntry."""
         if self.op_type == WALOperationType.PUT:
             return DatabaseEntry.put(self.key, self.sequence, self.value, self.timestamp)
-        else:
+        elif self.op_type == WALOperationType.DELETE:
             return DatabaseEntry.delete(self.key, self.sequence, self.timestamp)
+        else:
+            # FLUSH operations cannot be converted to DatabaseEntry since they're WAL-specific
+            raise ValueError(f"Cannot convert {self.op_type} WALEntry to DatabaseEntry")
 
     @property
     def timestamp(self) -> int:
@@ -88,6 +97,25 @@ class WALEntry:
     @property
     def sequence(self) -> int:
         return self._sequence
+
+    def is_flush_marker(self) -> bool:
+        """Check if this entry is a flush marker."""
+        return self.op_type == WALOperationType.FLUSH
+
+    def get_flushed_sstable_id(self) -> Optional[str]:
+        """
+        Extract the SSTable ID from a flush marker entry.
+        
+        Returns:
+            str: SSTable ID if this is a flush marker, None otherwise
+        """
+        if not self.is_flush_marker():
+            return None
+        
+        if self.key.startswith("FLUSH:"):
+            return self.key[6:]  # Remove "FLUSH:" prefix
+        
+        return None
 
     def serialize(self) -> bytes:
         key_bytes = self.key.encode("utf-8")
@@ -162,8 +190,10 @@ class WALEntry:
 
         if op_type == WALOperationType.DELETE:
             return cls.delete(timestamp, key, sequence)
-        else:
+        elif op_type == WALOperationType.PUT:
             return cls.put(timestamp, key, value_bytes, sequence)
+        else:  # WALOperationType.FLUSH
+            return cls(timestamp=timestamp, op_type=WALOperationType.FLUSH, key=key, sequence=sequence, value=b'')
 
 
 class WriteAheadLog:
@@ -200,13 +230,14 @@ class WriteAheadLog:
         self.read_file = open(self.current_path, 'rb')
         self.write_position = 0
 
-    def rotate(self, sstable_id: str) -> str:
+    def rotate(self, sstable_id: str, sequence: int) -> str:
         """
         Rotate the WAL after a successful SSTable flush.
 
         Args:
             sstable_id: ID of the SSTable that contains the flushed data
                        (used for tracking which WAL files can be cleaned up)
+            sequence: Current sequence number for the flush marker
 
         Returns:
             str: Path of the old WAL file that was rotated out
@@ -215,21 +246,12 @@ class WriteAheadLog:
 
         # Write a special marker indicating successful flush
         # This helps during recovery to know this WAL was fully flushed
-        self._write_flush_marker(sstable_id)
+        self.write_flush_marker(sstable_id, sequence)
 
         # Open new WAL file
         self._open_next_file()
 
         return old_path
-
-    def _write_flush_marker(self, sstable_id: str) -> None:
-        """Write a marker indicating successful flush to SSTable."""
-        if self.write_file:
-            # Could use a special WALEntry type for this
-            marker = f"FLUSHED_TO_SSTABLE:{sstable_id}\n".encode()
-            self.write_file.write(marker)
-            self.write_file.flush()
-            os.fsync(self.write_file.fileno())
 
     def close(self) -> None:
         """Safely close the WAL file."""
@@ -278,6 +300,43 @@ class WriteAheadLog:
         wal_entry = WALEntry.from_database_entry(entry)
 
         serialized_entry = wal_entry.serialize()
+        current_position = self.write_position
+        bytes_written = self.write_file.write(serialized_entry)
+        self.write_position = current_position + bytes_written
+
+        try:
+            self.write_file.flush()
+            os.fsync(self.write_file.fileno())
+        except (OSError, ValueError) as e:
+            raise IOError from e
+
+        return current_position
+
+    def write_flush_marker(self, sstable_id: str, sequence: int) -> int:
+        """
+        Write a flush marker entry to the WAL.
+        
+        Args:
+            sstable_id: ID of the SSTable that was flushed
+            sequence: Current sequence number for the flush marker
+            
+        Returns:
+            int: Byte offset where the flush marker was written
+        """
+        if not self.write_file:
+            raise RuntimeError('WAL file not available!')
+        
+        # Create flush marker entry with the SSTable ID in the key
+        timestamp = int(datetime.utcnow().timestamp())
+        flush_entry = WALEntry(
+            timestamp=timestamp, 
+            op_type=WALOperationType.FLUSH,
+            key=f"FLUSH:{sstable_id}", 
+            sequence=sequence, 
+            value=b''
+        )
+        
+        serialized_entry = flush_entry.serialize()
         current_position = self.write_position
         bytes_written = self.write_file.write(serialized_entry)
         self.write_position = current_position + bytes_written

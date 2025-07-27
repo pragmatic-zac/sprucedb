@@ -250,6 +250,16 @@ class SSTableWriter:
         timestamp = datetime.utcnow().strftime('%Y%m%d%H%M%S')
         return f"{self.base_path}.{timestamp}"
 
+    @property 
+    def sstable_id(self) -> str:
+        """Get the unique identifier for this SSTable."""
+        return os.path.basename(self.filepath)
+
+    @property
+    def sstable_path(self) -> str:
+        """Get the full file path of this SSTable.""" 
+        return self.filepath
+
     def add_entry(self, entry: DatabaseEntry) -> None:
         """ Add entry, enforcing sort order """
         if self._file is None:
