@@ -1,4 +1,3 @@
-import os
 from src.configuration import Configuration
 from src.database import Database
 
@@ -11,11 +10,16 @@ def main() -> None:
     
     db.put("user:123", b"michael_scott")
     result = db.get("user:123")
-    print(f"Retrieved: {result}")
+    if result is not None:
+        print(f"Retrieved: {result.decode('utf-8')}")
+    else:
+        print("Retrieved: None")
     
     missing = db.get("user:999")
-    print(f"Missing key result: {missing}")
-    
+    if missing is not None:
+        print(f"Missing key result: {missing.decode('utf-8')}")
+    else:
+        print("Missing key result: None")
     db.close()
 
 if __name__ == "__main__":
