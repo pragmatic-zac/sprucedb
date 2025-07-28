@@ -138,6 +138,7 @@ class Database:
                 self.logger.debug("Skipping fully flushed WAL file: %s", wal_file.name)
                 
                 # Still need to track sequence numbers from skipped files
+                # TODO - not sure we need this
                 try:
                     for wal_entry in WriteAheadLog.read_all_entries(str(wal_file)):
                         highest_sequence = max(highest_sequence, wal_entry.sequence)
@@ -223,8 +224,6 @@ class Database:
         entry = DatabaseEntry.put(key, seq_num, value)
         self.wal.write_to_log(entry)
 
-        # TODO - add deferred commit until after memtable insert
-        # right now we could end up in an inconsistent state if WAL succeeds but memtable fails
         self.memtable.insert(key, entry)
 
         # could also consider checking every N inserts instead of every single time
