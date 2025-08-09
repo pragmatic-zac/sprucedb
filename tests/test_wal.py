@@ -152,18 +152,18 @@ def test_basic_write_and_rotation() -> None:
 
         # test basic writes
         wal = WriteAheadLog(wal_path)
-        pos1 = wal.write_to_log(WALOperationType.PUT, "key1", 0, b"value1")
-        pos2 = wal.write_to_log(WALOperationType.PUT, "key2", 1, b"value2")
+        pos1 = wal.write_to_log(DatabaseEntry.put("key1", 0, b"value1"))
+        pos2 = wal.write_to_log(DatabaseEntry.put("key2", 1, b"value2"))
 
         # verify positions are sequential
         assert pos2 > pos1
 
         # rotate the file
-        old_path = wal.rotate("sst_001")
+        old_path = wal.rotate("sst_001", 2)  # Next sequence would be 2
         assert os.path.exists(old_path)
 
         # verify we can still write after rotation
-        pos3 = wal.write_to_log(WALOperationType.PUT, "key3", 2, b"value3")
+        pos3 = wal.write_to_log(DatabaseEntry.put("key3", 2, b"value3"))
         assert pos3 == 0  # Position should reset after rotation
 
 
@@ -174,34 +174,34 @@ def test_wal_validations() -> None:
 
         # invalid key should raise
         with pytest.raises(ValueError):
-            wal.write_to_log(WALOperationType.PUT, "", 0, b"value")
+            wal.write_to_log(DatabaseEntry.put("", 0, b"value"))
 
         # huge key should raise
         huge_key = "x" * (MAX_KEY_BYTES + 1)
         with pytest.raises(ValueError):
-            wal.write_to_log(WALOperationType.PUT, huge_key, 0, b"value")
+            wal.write_to_log(DatabaseEntry.put(huge_key, 0, b"value"))
 
         # negative sequence number should raise
         with pytest.raises(ValueError):
-            wal.write_to_log(WALOperationType.PUT, "key", -1, b"value")
+            wal.write_to_log(DatabaseEntry.put("key", -1, b"value"))
 
         # huge value should raise
         huge_value = b"x" * (MAX_VALUE_BYTES + 1)
         with pytest.raises(ValueError, match=f"value exceeds max size of {MAX_VALUE_BYTES} bytes"):
-            wal.write_to_log(WALOperationType.PUT, "key", 0, huge_value)
+            wal.write_to_log(DatabaseEntry.put("key", 0, huge_value))
 
         # maximum size value should succeed
         max_value = b"x" * MAX_VALUE_BYTES
-        pos = wal.write_to_log(WALOperationType.PUT, "key_max", 1, max_value)
+        pos = wal.write_to_log(DatabaseEntry.put("key_max", 1, max_value))
         assert pos >= 0
 
         # DELETE operations should not be affected by value size (no value)
-        pos = wal.write_to_log(WALOperationType.DELETE, "key_delete", 2)
+        pos = wal.write_to_log(DatabaseEntry.delete("key_delete", 2))
         assert pos >= 0
 
         # PUT with None value should raise (separate from size validation)
-        with pytest.raises(ValueError, match="value is required for PUT operations"):
-            wal.write_to_log(WALOperationType.PUT, "key", 3, None)
+        with pytest.raises(ValueError, match="PUT entries must have a value"):
+            wal.write_to_log(DatabaseEntry.put("key", 3, None))  # type: ignore[arg-type]
 
 
 def test_file_closure_and_sync() -> None:
@@ -210,7 +210,7 @@ def test_file_closure_and_sync() -> None:
         wal_path = os.path.join(tmpdir, "test.wal")
 
         with WriteAheadLog(wal_path) as wal:
-            pos = wal.write_to_log(WALOperationType.PUT, "key1", 0, b"value1")
+            _ = wal.write_to_log(DatabaseEntry.put("key1", 0, b"value1"))
             actual_file_path = wal.current_path
 
         # verify file is closed
@@ -232,7 +232,7 @@ def test_explicit_close() -> None:
         wal_path = os.path.join(tmpdir, "test.wal")
         wal = WriteAheadLog(wal_path)
 
-        wal.write_to_log(WALOperationType.PUT, "key1", 0, b"value1")
+        wal.write_to_log(DatabaseEntry.put("key1", 0, b"value1"))
         wal.close()
 
 
@@ -247,8 +247,8 @@ def test_unified_entry_integration() -> None:
         delete_entry = DatabaseEntry.delete("delete_key", 43, 1234567891)
         
         # Write entries using the unified interface
-        pos1 = wal.write_to_log(WALOperationType.PUT, put_entry.key, put_entry.sequence, put_entry.value)
-        pos2 = wal.write_to_log(WALOperationType.DELETE, delete_entry.key, delete_entry.sequence)
+        pos1 = wal.write_to_log(put_entry)
+        pos2 = wal.write_to_log(delete_entry)
         
         # Read back and verify conversion
         entry1 = wal.read_log_entry(pos1)
@@ -282,7 +282,7 @@ def test_unified_entry_integration() -> None:
 
         # verify we can't write after closing
         with pytest.raises(RuntimeError):
-            wal.write_to_log(WALOperationType.PUT, "key2", 1, b"value2")
+            wal.write_to_log(DatabaseEntry.put("key2", 1, b"value2"))
 
 
 def test_read_log_entry() -> None:
@@ -293,7 +293,7 @@ def test_read_log_entry() -> None:
         expected_key = "key1"
         expected_value = b"value100"
 
-        wal.write_to_log(WALOperationType.PUT, expected_key, 0, expected_value)
+        wal.write_to_log(DatabaseEntry.put(expected_key, 0, expected_value))
 
         result = wal.read_log_entry(0)
         assert result is not None
@@ -302,15 +302,73 @@ def test_read_log_entry() -> None:
         assert result.sequence == 0  # First entry should have sequence 0
 
 
+def test_has_flush_marker_at_end_comprehensive() -> None:
+    """Test the robust FLUSH marker detection method with various scenarios."""
+    import tempfile
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Test 1: WAL file ending with FLUSH marker
+        wal_path_1 = os.path.join(tmpdir, "test1.wal")
+        wal1 = WriteAheadLog(wal_path_1)
+        
+        # Add regular entries followed by FLUSH marker
+        wal1.write_to_log(DatabaseEntry.put("key1", 1, b"value1"))
+        wal1.write_to_log(DatabaseEntry.delete("key2", 2))
+        wal1.write_flush_marker("sstable_123", 3)
+        
+        actual_path_1 = wal1.current_path
+        wal1.close()
+        
+        # Should detect FLUSH marker
+        assert WriteAheadLog.has_flush_marker_at_end(actual_path_1) is True
+        
+        # Test 2: WAL file NOT ending with FLUSH marker
+        wal_path_2 = os.path.join(tmpdir, "test2.wal")
+        wal2 = WriteAheadLog(wal_path_2)
+        
+        # Add only regular entries (no FLUSH marker)
+        wal2.write_to_log(DatabaseEntry.put("key1", 1, b"value1"))
+        wal2.write_to_log(DatabaseEntry.put("key2", 2, b"value2"))
+        
+        actual_path_2 = wal2.current_path
+        wal2.close()
+        
+        # Should NOT detect FLUSH marker
+        assert WriteAheadLog.has_flush_marker_at_end(actual_path_2) is False
+        
+        # Test 3: Empty WAL file
+        empty_path = os.path.join(tmpdir, "empty.wal")
+        with open(empty_path, 'wb') as _:
+            pass  # Create empty file
+        
+        # Empty file should return False
+        assert WriteAheadLog.has_flush_marker_at_end(empty_path) is False
+        
+        # Test 4: WAL with FLUSH marker in middle but not at end
+        wal_path_3 = os.path.join(tmpdir, "test3.wal")
+        wal3 = WriteAheadLog(wal_path_3)
+        
+        # Add entries, then FLUSH marker, then more entries
+        wal3.write_to_log(DatabaseEntry.put("key1", 1, b"value1"))
+        wal3.write_flush_marker("sstable_456", 2)  # FLUSH in middle
+        wal3.write_to_log(DatabaseEntry.put("key2", 3, b"value2"))  # Entry after FLUSH
+        
+        actual_path_3 = wal3.current_path
+        wal3.close()
+        
+        # Should NOT detect FLUSH marker since it's not at the end
+        assert WriteAheadLog.has_flush_marker_at_end(actual_path_3) is False
+
+
 def test_sequence_number_increment() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         wal_path = os.path.join(tmpdir, "test.wal")
         wal = WriteAheadLog(wal_path)
 
         # Write multiple entries with externally managed sequence numbers
-        pos1 = wal.write_to_log(WALOperationType.PUT, "key1", 0, b"value1")
-        pos2 = wal.write_to_log(WALOperationType.PUT, "key2", 1, b"value2")
-        pos3 = wal.write_to_log(WALOperationType.DELETE, "key3", 2)
+        pos1 = wal.write_to_log(DatabaseEntry.put("key1", 0, b"value1"))
+        pos2 = wal.write_to_log(DatabaseEntry.put("key2", 1, b"value2"))
+        pos3 = wal.write_to_log(DatabaseEntry.delete("key3", 2))
 
         # Read back entries and verify sequence numbers
         entry1 = wal.read_log_entry(pos1)
@@ -331,15 +389,15 @@ def test_sequence_number_persists_after_rotation() -> None:
         wal = WriteAheadLog(wal_path)
 
         # Write some entries with externally managed sequence numbers
-        wal.write_to_log(WALOperationType.PUT, "key1", 0, b"value1")
-        wal.write_to_log(WALOperationType.PUT, "key2", 1, b"value2")
+        wal.write_to_log(DatabaseEntry.put("key1", 0, b"value1"))
+        wal.write_to_log(DatabaseEntry.put("key2", 1, b"value2"))
 
         # Rotate the file
-        old_path = wal.rotate("sst_001")
+        _ = wal.rotate("sst_001", 2)  # Next sequence would be 2
 
         # Write more entries after rotation with continuing sequence numbers
-        pos3 = wal.write_to_log(WALOperationType.PUT, "key3", 2, b"value3")
-        pos4 = wal.write_to_log(WALOperationType.PUT, "key4", 3, b"value4")
+        pos3 = wal.write_to_log(DatabaseEntry.put("key3", 2, b"value3"))
+        pos4 = wal.write_to_log(DatabaseEntry.put("key4", 3, b"value4"))
 
         # Read back entries and verify sequence numbers continue from previous file
         entry3 = wal.read_log_entry(pos3)
@@ -368,11 +426,10 @@ def test_value_size_consistency_with_sstable() -> None:
         
         # WAL should reject it
         with pytest.raises(ValueError, match=f"value exceeds max size of {MAX_VALUE_BYTES} bytes"):
-            wal.write_to_log(WALOperationType.PUT, "test_key", 0, oversized_value)
+            wal.write_to_log(DatabaseEntry.put("test_key", 0, oversized_value))
         
         # SSTable should also reject it
         from src.sstable import serialize_entry
-        from src.entry import DatabaseEntry
         with pytest.raises(ValueError, match=f"Value size exceeds max of {SSTABLE_MAX_VALUE_SIZE} bytes"):
             entry = DatabaseEntry.put("test_key", 0, oversized_value)
             serialize_entry(entry)
@@ -381,7 +438,7 @@ def test_value_size_consistency_with_sstable() -> None:
         max_size_value = b"x" * MAX_VALUE_BYTES
         
         # WAL should accept it
-        pos = wal.write_to_log(WALOperationType.PUT, "test_key", 1, max_size_value)
+        pos = wal.write_to_log(DatabaseEntry.put("test_key", 1, max_size_value))
         assert pos >= 0
         
         # SSTable should also accept it

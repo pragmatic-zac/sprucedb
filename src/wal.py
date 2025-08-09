@@ -3,7 +3,7 @@ import struct
 import zlib
 from datetime import datetime
 from enum import Enum
-from typing import Optional, BinaryIO
+from typing import Optional, BinaryIO, Iterator
 
 from .entry import DatabaseEntry, EntryType
 
@@ -25,6 +25,7 @@ MAX_VALUE_BYTES = 1024 * 1024  # 1MB max value size, consistent with SSTable
 class WALOperationType(Enum):
     PUT = 1
     DELETE = 2
+    FLUSH = 3
 
 
 class WALEntry:
@@ -47,6 +48,11 @@ class WALEntry:
     @classmethod
     def delete(cls, timestamp: int, key: str, sequence: int) -> 'WALEntry':
         return cls(timestamp, WALOperationType.DELETE, key, sequence, b'')
+    
+    @classmethod
+    def flush(cls, timestamp: int, sequence: int) -> 'WALEntry':
+        """Create a flush marker entry."""
+        return cls(timestamp=timestamp, op_type=WALOperationType.FLUSH, key="", sequence=sequence, value=b'')
 
     @classmethod
     def from_database_entry(cls, entry: DatabaseEntry, timestamp: Optional[int] = None) -> 'WALEntry':
@@ -66,8 +72,11 @@ class WALEntry:
         """Convert this WALEntry to a unified DatabaseEntry."""
         if self.op_type == WALOperationType.PUT:
             return DatabaseEntry.put(self.key, self.sequence, self.value, self.timestamp)
-        else:
+        elif self.op_type == WALOperationType.DELETE:
             return DatabaseEntry.delete(self.key, self.sequence, self.timestamp)
+        else:
+            # FLUSH operations cannot be converted to DatabaseEntry since they're WAL-specific
+            raise ValueError(f"Cannot convert {self.op_type} WALEntry to DatabaseEntry")
 
     @property
     def timestamp(self) -> int:
@@ -88,6 +97,25 @@ class WALEntry:
     @property
     def sequence(self) -> int:
         return self._sequence
+
+    def is_flush_marker(self) -> bool:
+        """Check if this entry is a flush marker."""
+        return self.op_type == WALOperationType.FLUSH
+
+    def get_flushed_sstable_id(self) -> Optional[str]:
+        """
+        Extract the SSTable ID from a flush marker entry.
+        
+        Returns:
+            str: SSTable ID if this is a flush marker, None otherwise
+        """
+        if not self.is_flush_marker():
+            return None
+        
+        if self.key.startswith("FLUSH:"):
+            return self.key[6:]  # Remove "FLUSH:" prefix
+        
+        return None
 
     def serialize(self) -> bytes:
         key_bytes = self.key.encode("utf-8")
@@ -162,8 +190,10 @@ class WALEntry:
 
         if op_type == WALOperationType.DELETE:
             return cls.delete(timestamp, key, sequence)
-        else:
+        elif op_type == WALOperationType.PUT:
             return cls.put(timestamp, key, value_bytes, sequence)
+        else:  # WALOperationType.FLUSH
+            return cls(timestamp=timestamp, op_type=WALOperationType.FLUSH, key=key, sequence=sequence, value=b'')
 
 
 class WriteAheadLog:
@@ -200,13 +230,14 @@ class WriteAheadLog:
         self.read_file = open(self.current_path, 'rb')
         self.write_position = 0
 
-    def rotate(self, sstable_id: str) -> str:
+    def rotate(self, sstable_id: str, sequence: int) -> str:
         """
         Rotate the WAL after a successful SSTable flush.
 
         Args:
             sstable_id: ID of the SSTable that contains the flushed data
                        (used for tracking which WAL files can be cleaned up)
+            sequence: Current sequence number for the flush marker
 
         Returns:
             str: Path of the old WAL file that was rotated out
@@ -215,21 +246,12 @@ class WriteAheadLog:
 
         # Write a special marker indicating successful flush
         # This helps during recovery to know this WAL was fully flushed
-        self._write_flush_marker(sstable_id)
+        self.write_flush_marker(sstable_id, sequence)
 
         # Open new WAL file
         self._open_next_file()
 
         return old_path
-
-    def _write_flush_marker(self, sstable_id: str) -> None:
-        """Write a marker indicating successful flush to SSTable."""
-        if self.write_file:
-            # Could use a special WALEntry type for this
-            marker = f"FLUSHED_TO_SSTABLE:{sstable_id}\n".encode()
-            self.write_file.write(marker)
-            self.write_file.flush()
-            os.fsync(self.write_file.fileno())
 
     def close(self) -> None:
         """Safely close the WAL file."""
@@ -248,51 +270,73 @@ class WriteAheadLog:
     def __exit__(self, exc_type: Optional[type], exc_val: Optional[Exception], exc_tb: Optional[object]) -> None:
         self.close()
 
-    def write_to_log(self, op_type: WALOperationType, key: str, sequence: int, value: Optional[bytes] = None) -> int:
+    def write_to_log(self, entry: DatabaseEntry) -> int:
         """
-        Write an operation to the WAL.
+        Write a unified DatabaseEntry to the WAL.
 
         Args:
-            op_type: Type of operation (PUT or DELETE)
-            key: Key being operated on
-            sequence: Global sequence number for this operation
-            value: Value to store (None for DELETE operations)
+            entry: DatabaseEntry instance to write.
 
         Returns:
-            int: Position where the entry was written
+            int: Byte offset where the entry was written.
 
         Raises:
-            RuntimeError: If WAL file is not available
-            ValueError: If key/value validation fails
-            IOError: If write fails
+            RuntimeError: If the WAL is not currently writable.
+            ValueError: If the entry violates WAL size constraints.
+            IOError:   If the underlying file write fails.
         """
         if not self.write_file:
             raise RuntimeError('WAL file not available!')
 
-        if not key:
-            raise ValueError('key is required')
-
-        if len(key.encode()) > MAX_KEY_BYTES:
+        # Validate key/value size constraints that are WAL-specific
+        if len(entry.key.encode()) > MAX_KEY_BYTES:
             raise ValueError('key exceeds max size')
 
-        if sequence < 0:
-            raise ValueError('sequence number must be non-negative')
-
-        if op_type == WALOperationType.PUT and value is not None:
-            if len(value) > MAX_VALUE_BYTES:
+        if entry.entry_type == EntryType.PUT and entry.value is not None:
+            if len(entry.value) > MAX_VALUE_BYTES:
                 raise ValueError(f'value exceeds max size of {MAX_VALUE_BYTES} bytes')
 
+        # Convert to a WALEntry (adds timestamp if missing)
+        wal_entry = WALEntry.from_database_entry(entry)
+
+        serialized_entry = wal_entry.serialize()
+        current_position = self.write_position
+        bytes_written = self.write_file.write(serialized_entry)
+        self.write_position = current_position + bytes_written
+
+        try:
+            self.write_file.flush()
+            os.fsync(self.write_file.fileno())
+        except (OSError, ValueError) as e:
+            raise IOError from e
+
+        return current_position
+
+    def write_flush_marker(self, sstable_id: str, sequence: int) -> int:
+        """
+        Write a flush marker entry to the WAL.
+        
+        Args:
+            sstable_id: ID of the SSTable that was flushed
+            sequence: Current sequence number for the flush marker
+            
+        Returns:
+            int: Byte offset where the flush marker was written
+        """
+        if not self.write_file:
+            raise RuntimeError('WAL file not available!')
+        
+        # Create flush marker entry with the SSTable ID in the key
         timestamp = int(datetime.utcnow().timestamp())
-
-        entry = None
-        if op_type == WALOperationType.DELETE:
-            entry = WALEntry.delete(timestamp, key, sequence)
-        else:
-            if value is None:
-                raise ValueError('value is required for PUT operations')
-            entry = WALEntry.put(timestamp, key, value, sequence)
-
-        serialized_entry = entry.serialize()
+        flush_entry = WALEntry(
+            timestamp=timestamp, 
+            op_type=WALOperationType.FLUSH,
+            key=f"FLUSH:{sstable_id}", 
+            sequence=sequence, 
+            value=b''
+        )
+        
+        serialized_entry = flush_entry.serialize()
         current_position = self.write_position
         bytes_written = self.write_file.write(serialized_entry)
         self.write_position = current_position + bytes_written
@@ -344,3 +388,117 @@ class WriteAheadLog:
             raise ValueError("Incomplete payload")
 
         return WALEntry.deserialize(header_bytes + payload_bytes)
+
+    @staticmethod
+    def read_all_entries(file_path: str) -> Iterator[WALEntry]:
+        """
+        Read all entries from a WAL file, handling corruption gracefully.
+        
+        This method continues reading even if individual entries are corrupted,
+        logging warnings for corrupted entries but not failing the entire read.
+        
+        Args:
+            file_path: Path to the WAL file to read
+            
+        Yields:
+            WALEntry: Valid entries from the WAL file
+        """
+        import logging
+        logger = logging.getLogger("sprucedb.wal.replay")
+        
+        try:
+            with open(file_path, 'rb') as file:
+                position = 0
+                entry_count = 0
+                corruption_count = 0
+                
+                while True:
+                    try:
+                        file.seek(position)
+                        
+                        # Try to read header
+                        header_bytes = file.read(WALEntry.HEADER_SIZE)
+                        if not header_bytes:
+                            break  # EOF
+                        
+                        if len(header_bytes) < WALEntry.HEADER_SIZE:
+                            logger.warning("Incomplete header at position %d in %s, stopping replay", 
+                                         position, file_path)
+                            break
+                        
+                        # Extract payload size from header
+                        _, _, _, _, key_len, value_len = struct.unpack(WALEntry.HEADER_FORMAT, header_bytes)
+                        
+                        # Read payload
+                        payload_size = key_len + value_len
+                        payload_bytes = file.read(payload_size)
+                        
+                        if len(payload_bytes) < payload_size:
+                            logger.warning("Incomplete payload at position %d in %s, stopping replay", 
+                                         position, file_path)
+                            break
+                        
+                        # Try to deserialize complete entry
+                        entry_data = header_bytes + payload_bytes
+                        entry = WALEntry.deserialize(entry_data)
+                        
+                        yield entry
+                        entry_count += 1
+                        position += len(entry_data)
+                        
+                    except ValueError as e:
+                        corruption_count += 1
+                        logger.warning("Corrupted entry at position %d in %s: %s", 
+                                     position, file_path, e)
+                        
+                        # Try to find the next valid entry by scanning ahead
+                        position += 1
+                        if position >= os.path.getsize(file_path):
+                            break
+                            
+                    except Exception as e:
+                        logger.error("Unexpected error reading WAL file %s at position %d: %s", 
+                                   file_path, position, e)
+                        break
+                
+                logger.info("WAL replay from %s: %d entries read, %d corruptions skipped", 
+                           file_path, entry_count, corruption_count)
+                           
+        except OSError as e:
+            logger.error("Failed to open WAL file %s for replay: %s", file_path, e)
+            # Don't yield anything if we can't open the file
+            return
+
+    @staticmethod
+    def has_flush_marker_at_end(file_path: str) -> bool:
+        """
+        Check if a WAL file ends with a FLUSH marker.
+        
+        This method uses read_all_entries logic to sequentially
+        read through the file and check the last valid entry.
+        Could be optimized to not read the entire file, but this
+        works for now.
+        """
+        import logging
+        logger = logging.getLogger("sprucedb.wal.check")
+        
+        try:
+            entries = list(WriteAheadLog.read_all_entries(file_path))
+            
+            if not entries:
+                return False  # Empty file has no FLUSH marker
+            
+            # Check if the last valid entry is a FLUSH marker
+            last_entry = entries[-1]
+            is_flush = last_entry.is_flush_marker()
+            
+            if is_flush:
+                logger.debug("WAL file %s ends with FLUSH marker (SSTable: %s)", 
+                           file_path, last_entry.get_flushed_sstable_id())
+            
+            return is_flush
+            
+        except Exception as e:
+            logger.warning("Error checking for FLUSH marker in %s: %s", file_path, e)
+            # If we can't determine, assume it needs replay (safer default)
+            return False
